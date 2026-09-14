@@ -85,24 +85,29 @@ fn zero_calc_row(slice: &UserSlice, status: impl Into<String>) -> ReconRow {
 /// after that block's receipts ran, i.e. post-event, so the event itself is
 /// dropped from the returned timeline before replaying the rest.
 ///
-/// Returns the (possibly updated) baseline and (possibly trimmed) timeline
-/// unchanged when the fallback doesn't apply or doesn't find anything.
+/// Returns the (possibly updated) baseline, (possibly trimmed) timeline, and
+/// an `onchain_claimed` adjustment: when the dropped leading event was itself
+/// a `Claim`, its on-chain amount must come out of the account's total too —
+/// otherwise it counts on the on-chain side but was never replayed on the
+/// calculated side, producing a spurious divergence rather than a fixed
+/// reconciliation. All three are unchanged when the fallback doesn't apply or
+/// doesn't find anything.
 pub fn apply_block_height_fallback(
     snapshot: &dyn SnapshotSource,
     slice: &UserSlice,
     raw_account: Option<Vec<u8>>,
     mut timeline: Timeline,
-) -> (Option<Vec<u8>>, Timeline) {
+) -> (Option<Vec<u8>>, Timeline, u128) {
     if raw_account.is_some() || !snapshot.is_authoritative() {
-        return (raw_account, timeline);
+        return (raw_account, timeline, 0);
     }
     let first_is_deposit =
         matches!(timeline.events.first(), Some(e) if matches!(e.action, Action::Deposit { .. }));
     if first_is_deposit {
-        return (raw_account, timeline);
+        return (raw_account, timeline, 0);
     }
     let Some(block_height) = slice.first_event_block_height else {
-        return (raw_account, timeline);
+        return (raw_account, timeline, 0);
     };
     let fallback: std::thread::Result<Result<Option<Vec<u8>>>> =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -110,10 +115,15 @@ pub fn apply_block_height_fallback(
         }));
     match fallback {
         Ok(Ok(Some(bytes))) => {
-            timeline.events.remove(0);
-            (Some(bytes), timeline)
+            let dropped = timeline.events.remove(0);
+            let claimed_adjustment = if matches!(dropped.action, Action::Claim) {
+                slice.first_event_claim_amount.unwrap_or(0)
+            } else {
+                0
+            };
+            (Some(bytes), timeline, claimed_adjustment)
         }
-        _ => (raw_account, timeline),
+        _ => (raw_account, timeline, 0),
     }
 }
 
@@ -148,7 +158,6 @@ pub fn reconcile_user(
     let t = Instant::now();
     let (slice, timeline) = timeline::load_user(conn, backend_account_id)?;
     timing.load_us = t.elapsed().as_micros();
-    let actual = slice.onchain_claimed;
 
     // Always ask the snapshot source — `existed_at_start` is the export's own
     // classification and isn't trusted as ground truth on its own; a live
@@ -180,8 +189,11 @@ pub fn reconcile_user(
         Ok(Ok(v)) => v,
     };
 
-    let (raw_account, timeline) =
+    let (raw_account, timeline, claimed_adjustment) =
         apply_block_height_fallback(snapshot, &slice, raw_account, timeline);
+    // The dropped leading claim (if any) already happened before the
+    // recovered baseline — it's out of scope for this replay on both sides.
+    let actual = slice.onchain_claimed - claimed_adjustment;
 
     // A non-authoritative source (the local `snapshots` cache) missing a row
     // is only a real gap for an account the export says existed at H — a

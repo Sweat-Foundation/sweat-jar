@@ -43,7 +43,8 @@ pub fn explain(opts: &ExplainOpts) -> Result<()> {
     // Always ask — `existed_at_start` is the export's classification, not
     // ground truth; a live archival lookup is authoritative either way.
     let raw_account = snapshot.raw_account(opts.account, &slice.near_account_id)?;
-    let (raw_account, timeline) =
+    let first_event_ts = timeline.events.first().map(|e| e.ts_ms);
+    let (raw_account, timeline, claimed_adjustment) =
         apply_block_height_fallback(snapshot.as_ref(), &slice, raw_account, timeline);
     let had_baseline = raw_account.is_some();
     let no_baseline = !had_baseline && !snapshot.is_authoritative() && slice.existed_at_start;
@@ -77,6 +78,18 @@ pub fn explain(opts: &ExplainOpts) -> Result<()> {
     }
 
     let calc: BTreeMap<u64, u128> = outcome.per_claim.iter().copied().collect();
+
+    // The block-height fallback dropped this claim from the timeline — its
+    // effect is already baked into the recovered baseline, so it's out of
+    // scope for this replay on both sides, exactly as in `reconcile_user`.
+    if claimed_adjustment > 0 {
+        if let Some(ts) = first_event_ts {
+            onchain.remove(&ts);
+        }
+        println!(
+            "note: block-height fallback recovered the baseline and dropped a pre-H claim of {claimed_adjustment} (excluded from totals below)\n"
+        );
+    }
 
     println!("account {} ({})", opts.account, slice.near_account_id);
     let baseline_label = if no_baseline {

@@ -161,6 +161,11 @@ fn account_not_found_via_invisible_creation_recovers_via_block_height_fallback()
 
     let row = reconcile_user(&c, 600, &products(), &snap).unwrap();
     assert_eq!(row.status, "ok", "row: {row:?}");
+    // The dropped claim (amount 5) is already reflected in the recovered
+    // baseline — it must come out of `actual_total_claim` too, or this
+    // account would show a spurious 100% divergence (calculated 0 vs
+    // on-chain 5) despite reconciling cleanly.
+    assert_eq!(row.actual_total_claim, "0", "row: {row:?}");
 }
 
 #[test]

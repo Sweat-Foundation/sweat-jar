@@ -21,6 +21,13 @@ pub struct UserSlice {
     /// migration) before this block — so re-fetching state at this height
     /// recovers it.
     pub first_event_block_height: Option<u64>,
+    /// The on-chain claim amount of the first event, if it's a `Claim`. When
+    /// the block-height-fallback drops that first event (its effect is
+    /// already reflected in the re-fetched baseline), this amount must also
+    /// come out of `onchain_claimed` — otherwise the claim counts on the
+    /// on-chain side but never on the calculated side, a spurious ~100%
+    /// divergence rather than a fixed reconciliation.
+    pub first_event_claim_amount: Option<u128>,
 }
 
 /// Reads every event row for `backend_account_id` and builds a sorted engine
@@ -58,6 +65,8 @@ pub fn load_user(conn: &Connection, backend_account_id: i64) -> Result<(UserSlic
     // prefix `Timeline::sorted()` uses — so the first sorted event's block
     // height can be looked back up after sorting.
     let mut block_heights: std::collections::HashMap<(u64, u64), u64> = std::collections::HashMap::new();
+    // Same key, for `first_event_claim_amount` — only claim events have an entry.
+    let mut claim_amounts: std::collections::HashMap<(u64, u64), u128> = std::collections::HashMap::new();
     let mut onchain_claimed = 0u128;
 
     for (ts_ms, log_index, event, role, payload, block_height) in rows {
@@ -97,6 +106,7 @@ pub fn load_user(conn: &Connection, backend_account_id: i64) -> Result<(UserSlic
             ParsedEvent::Claim { total } => {
                 onchain_claimed =
                     onchain_claimed.checked_add(total).context("onchain_claimed overflow")?;
+                claim_amounts.insert((ts_ms, log_index), total);
                 Action::Claim
             }
         };
@@ -105,8 +115,9 @@ pub fn load_user(conn: &Connection, backend_account_id: i64) -> Result<(UserSlic
     }
 
     let timeline = Timeline { events }.sorted();
-    let first_event_block_height =
-        timeline.events.first().and_then(|first| block_heights.get(&(first.ts_ms, first.seq)).copied());
+    let first_key = timeline.events.first().map(|first| (first.ts_ms, first.seq));
+    let first_event_block_height = first_key.and_then(|k| block_heights.get(&k).copied());
+    let first_event_claim_amount = first_key.and_then(|k| claim_amounts.get(&k).copied());
 
     Ok((
         UserSlice {
@@ -116,6 +127,7 @@ pub fn load_user(conn: &Connection, backend_account_id: i64) -> Result<(UserSlic
             timezone_ms,
             onchain_claimed,
             first_event_block_height,
+            first_event_claim_amount,
         },
         timeline,
     ))
