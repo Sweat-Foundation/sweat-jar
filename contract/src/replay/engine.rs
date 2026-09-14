@@ -53,8 +53,13 @@ pub enum Action {
 }
 
 impl Action {
-    /// Tie-break rank for events sharing a millisecond: scores land first, then
-    /// state-changing calls, then claims (so a claim sees up-to-date state).
+    /// Fallback tie-break for two events sharing BOTH `ts_ms` and `seq`
+    /// (`seq` is the real on-chain `log_index`; a tie there means two
+    /// different receipts landed in the same millisecond with the same
+    /// intra-receipt log position, so log_index alone can't order them) —
+    /// scores land first, then state-changing calls, then claims (so a claim
+    /// sees up-to-date state). Genuinely ambiguous in that case; `seq` decides
+    /// everything else, see [`Timeline::sorted`].
     pub fn rank(&self) -> u8 {
         match self {
             Action::RecordScore(_) | Action::ApplyBooster { .. } => 0,
@@ -82,9 +87,17 @@ pub struct Timeline {
 }
 
 impl Timeline {
-    /// Sorts events by `(ts_ms, rank, seq)` in place.
+    /// Sorts events by `(ts_ms, seq, rank)` in place. `seq` is the real
+    /// on-chain `log_index` and is authoritative intra-block order — it MUST
+    /// outrank the synthetic `rank` heuristic. Sorting by `(ts_ms, rank, seq)`
+    /// instead (the pre-event-sourced-pivot order, when `seq` was only a
+    /// synthetic ingest counter) silently reordered same-millisecond events
+    /// against their real on-chain order — e.g. a `deposit` that sets an
+    /// account's timezone (log_index 0) landing AFTER an `apply_booster` in
+    /// the same receipt (log_index 1) purely because `ApplyBooster` outranks
+    /// `Deposit`, causing a spurious "Timezone is not set" panic on replay.
     pub fn sorted(mut self) -> Self {
-        self.events.sort_by_key(|e| (e.ts_ms, e.action.rank(), e.seq));
+        self.events.sort_by_key(|e| (e.ts_ms, e.seq, e.action.rank()));
         self
     }
 }

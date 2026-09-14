@@ -152,3 +152,42 @@ fn fixed_only_account_with_no_feed_timezone_is_fine() {
     assert!(matches!(outcome.status, ReplayStatus::Ok), "status: {:?}", outcome.status);
     assert!(outcome.total_claimed > 0);
 }
+
+#[test]
+fn same_millisecond_deposit_and_booster_replay_in_log_index_order() {
+    // Regression for a real production account: a `deposit` (log_index 0) and
+    // an `apply_booster` (log_index 1) landed in the exact same millisecond —
+    // same receipt, sequential logs. `Timeline::sorted()` used to sort by
+    // `(ts_ms, rank, seq)`, and ApplyBooster's rank (0) outranks Deposit's (1),
+    // so the booster replayed BEFORE the deposit that sets the account's
+    // timezone — a spurious "Timezone is not set" panic on an account that, on
+    // chain, never hit that condition. `seq` (real log_index) must win ties
+    // over the synthetic `rank`.
+    let account_id: near_sdk::AccountId = "tz-race.near".parse().unwrap();
+    let timeline = Timeline {
+        events: vec![
+            Event {
+                ts_ms: 1_000,
+                seq: 0, // log_index 0: deposit executed first on-chain
+                action: Action::Deposit { product_id: "steps_365d_20000".into(), amount: 1_000 * 10u128.pow(18) },
+            },
+            Event {
+                ts_ms: 1_000,
+                seq: 1, // log_index 1: booster applied second, same receipt
+                action: Action::ApplyBooster { score: 3000, timestamp_ms: 1_000 },
+            },
+        ],
+    }
+    .sorted();
+
+    assert_eq!(timeline.events[0].seq, 0, "deposit (seq 0) must sort first");
+    assert_eq!(timeline.events[1].seq, 1, "booster (seq 1) must sort second");
+
+    let outcome = run_timeline(
+        Baseline { account_id, raw_account: None, timezone_ms: Some(*Timezone::hour_shift(3)) },
+        &[score_product()],
+        0,
+        timeline,
+    );
+    assert!(matches!(outcome.status, ReplayStatus::Ok), "status: {:?}", outcome.status);
+}
