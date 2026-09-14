@@ -75,6 +75,19 @@ Without `--archival` (the local `snapshots` table, normally unpopulated),
 a missing row for an `existed_at_start` account IS a gap and is marked
 `no_baseline` — that table isn't authoritative the way a live lookup is.
 
+**`FASTNEAR_API_KEY`** — set it and every archival request goes out with
+`Authorization: Bearer <key>`; unset (or blank) falls back to unauthenticated.
+Worth having: the free tier throttles hard above ~4 concurrent requests, which
+is the main thing capping `--threads` on a full-population run. The key is
+read from the environment only — never a flag, never logged, and never
+included in error messages (those carry the URL only), so it can't leak into
+`results`/CSV output or a shared terminal transcript.
+
+```sh
+export FASTNEAR_API_KEY=...   # keep it out of shell history / committed files
+replay run --db x.duckdb --archival --threads 16
+```
+
 **`REPLAY_TIMING=1`** makes `reconcile_user` print one `TIMING account=<id>
 status=<s> load_us=<..> fetch_us=<..> replay_us=<..> total_us=<..>` line per
 account to stderr — a load breakdown (DB load / snapshot fetch / engine

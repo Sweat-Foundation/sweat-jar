@@ -9,6 +9,19 @@ use sweat_jar_model::data::account::{versioned::AccountVersioned, Account};
 /// Public FastNEAR archival JSON-RPC endpoint.
 pub const FASTNEAR_ARCHIVAL_RPC: &str = "https://archival-rpc.mainnet.fastnear.com";
 
+/// Env var holding the archival-RPC API key, sent as `Authorization: Bearer …`.
+/// Unset = unauthenticated (the free tier, which throttles hard above ~4
+/// concurrent requests).
+pub const API_KEY_ENV: &str = "FASTNEAR_API_KEY";
+
+/// Reads [`API_KEY_ENV`], treating blank/whitespace as unset.
+pub fn api_key_from_env() -> Option<String> {
+    std::env::var(API_KEY_ENV)
+        .ok()
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+}
+
 /// Source of a user's account state at block H (borsh bytes of an `AccountVersioned`), or `None`.
 pub trait SnapshotSource: Send + Sync {
     /// `account_id` is the integer replay id; `near_account_id` is the on-chain
@@ -69,15 +82,19 @@ pub struct ArchivalRpcSnapshotSource {
     pub rpc_url: String,
     pub jar_contract: String,
     pub block_height: u64,
+    /// Sent as `Authorization: Bearer <key>`. `None` = unauthenticated.
+    /// Never logged — error messages carry the URL only.
+    pub api_key: Option<String>,
 }
 
 impl ArchivalRpcSnapshotSource {
-    /// Point at FastNEAR's public archival RPC.
+    /// Point at FastNEAR's public archival RPC, keyed from [`API_KEY_ENV`] if set.
     pub fn fastnear(jar_contract: impl Into<String>, block_height: u64) -> Self {
         Self {
             rpc_url: FASTNEAR_ARCHIVAL_RPC.to_string(),
             jar_contract: jar_contract.into(),
             block_height,
+            api_key: api_key_from_env(),
         }
     }
 
@@ -125,14 +142,16 @@ fn parse_get_account_response(resp: &near_sdk::serde_json::Value) -> Result<Opti
 fn http_post_json(
     url: &str,
     body: &near_sdk::serde_json::Value,
+    api_key: Option<&str>,
 ) -> Result<near_sdk::serde_json::Value> {
     let attempts = 3u64;
     let mut last: Option<String> = None;
     for attempt in 0..attempts {
-        match ureq::post(url)
-            .timeout(std::time::Duration::from_secs(30))
-            .send_json(body)
-        {
+        let mut req = ureq::post(url).timeout(std::time::Duration::from_secs(30));
+        if let Some(key) = api_key {
+            req = req.set("Authorization", &format!("Bearer {key}"));
+        }
+        match req.send_json(body) {
             Ok(r) => return r.into_json().context("decode RPC response body"),
             // A 4xx is a bug on our side (bad request shape) — don't retry it.
             Err(ureq::Error::Status(code, _)) if (400..500).contains(&code) => {
@@ -151,8 +170,12 @@ fn http_post_json(
 
 impl SnapshotSource for ArchivalRpcSnapshotSource {
     fn raw_account(&self, _account_id: i64, near_account_id: &str) -> Result<Option<Vec<u8>>> {
-        let resp = http_post_json(&self.rpc_url, &self.request_body(near_account_id))
-            .with_context(|| format!("get_account({near_account_id}) @ block {}", self.block_height))?;
+        let resp = http_post_json(
+            &self.rpc_url,
+            &self.request_body(near_account_id),
+            self.api_key.as_deref(),
+        )
+        .with_context(|| format!("get_account({near_account_id}) @ block {}", self.block_height))?;
         parse_get_account_response(&resp)
             .with_context(|| format!("parsing get_account({near_account_id}) response"))
     }
@@ -242,6 +265,36 @@ mod tests {
         use base64::prelude::{Engine, BASE64_STANDARD};
         let args = BASE64_STANDARD.decode(p["args_base64"].as_str().unwrap()).unwrap();
         assert_eq!(near_sdk::serde_json::from_slice::<near_sdk::serde_json::Value>(&args).unwrap()["account_id"], "abc123");
+    }
+
+    #[test]
+    fn api_key_env_blank_is_none() {
+        // Not asserting on the real env var (tests share a process); this pins
+        // the blank/whitespace-is-unset rule the getter applies.
+        let normalize = |raw: &str| -> Option<String> {
+            Some(raw.trim().to_string()).filter(|k| !k.is_empty())
+        };
+        assert_eq!(normalize("  "), None);
+        assert_eq!(normalize(""), None);
+        assert_eq!(normalize(" key123 "), Some("key123".to_string()));
+    }
+
+    #[test]
+    fn archival_error_context_never_carries_the_api_key() {
+        // Unroutable address so the request fails fast; the key must not appear
+        // in the error chain (it travels as a header, never in URL or context).
+        let src = ArchivalRpcSnapshotSource {
+            rpc_url: "http://127.0.0.1:1/".to_string(),
+            jar_contract: "v2.jars.sweat".to_string(),
+            block_height: crate::parse::H_BLOCK,
+            api_key: Some("super-secret-key".to_string()),
+        };
+        let err = src.raw_account(1, "abc123").unwrap_err();
+        let rendered = format!("{err:#}");
+        assert!(
+            !rendered.contains("super-secret-key"),
+            "api key leaked into error: {rendered}"
+        );
     }
 
     #[test]

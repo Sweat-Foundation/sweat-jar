@@ -125,6 +125,7 @@ pub fn run(opts: &RunOpts) -> Result<RunSummary> {
             rpc_url: url.clone(),
             jar_contract: crate::products::JAR_CONTRACT.to_string(),
             block_height: crate::parse::H_BLOCK,
+            api_key: crate::snapshot::api_key_from_env(),
         }),
         None => Arc::new(DbSnapshotSource::new(&opts.db)),
     };

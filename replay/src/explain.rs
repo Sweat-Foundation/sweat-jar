@@ -34,6 +34,7 @@ pub fn explain(opts: &ExplainOpts) -> Result<()> {
             rpc_url: url.clone(),
             jar_contract: JAR_CONTRACT.to_string(),
             block_height: parse::H_BLOCK,
+            api_key: crate::snapshot::api_key_from_env(),
         }),
         None => Box::new(DbSnapshotSource::new(&opts.db)),
     };
