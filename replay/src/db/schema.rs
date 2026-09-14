@@ -8,6 +8,13 @@ CREATE TABLE IF NOT EXISTS events (
     backend_account_id  BIGINT  NOT NULL,
     ts_ms               BIGINT  NOT NULL,
     log_index           BIGINT  NOT NULL,
+    -- The exact NEAR block this event executed in. Not used for ordering
+    -- (ts_ms + log_index already give exact intra-account order) — only as a
+    -- fallback re-fetch point: if the block-H baseline is confirmed empty but
+    -- an account's first action isn't a Deposit, we know something created it
+    -- invisibly (e.g. an FT-transfer migration that writes storage directly,
+    -- no event emitted) and can re-fetch state at this block instead.
+    block_height        BIGINT  NOT NULL,
     event               VARCHAR NOT NULL,
     role                VARCHAR,
     payload             VARCHAR NOT NULL

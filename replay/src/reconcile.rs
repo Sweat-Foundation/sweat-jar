@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use sweat_jar::replay::engine::{self, ReplayStatus};
+use sweat_jar::replay::engine::{self, Action, ReplayStatus, Timeline};
 use sweat_jar_model::data::product::Product;
 
 use crate::parse;
@@ -76,6 +76,47 @@ fn zero_calc_row(slice: &UserSlice, status: impl Into<String>) -> ReconRow {
     }
 }
 
+/// Confirmed-empty at block H (an authoritative source said so) but the
+/// first action isn't a `Deposit` (the only action that auto-creates an
+/// account) means something invisible to the tracked event types created
+/// this account before H — e.g. an FT-transfer migration that writes storage
+/// directly and emits no event. Re-fetch state at that first event's own
+/// block height: NEAR's view-at-height semantics return state as of right
+/// after that block's receipts ran, i.e. post-event, so the event itself is
+/// dropped from the returned timeline before replaying the rest.
+///
+/// Returns the (possibly updated) baseline and (possibly trimmed) timeline
+/// unchanged when the fallback doesn't apply or doesn't find anything.
+pub fn apply_block_height_fallback(
+    snapshot: &dyn SnapshotSource,
+    slice: &UserSlice,
+    raw_account: Option<Vec<u8>>,
+    mut timeline: Timeline,
+) -> (Option<Vec<u8>>, Timeline) {
+    if raw_account.is_some() || !snapshot.is_authoritative() {
+        return (raw_account, timeline);
+    }
+    let first_is_deposit =
+        matches!(timeline.events.first(), Some(e) if matches!(e.action, Action::Deposit { .. }));
+    if first_is_deposit {
+        return (raw_account, timeline);
+    }
+    let Some(block_height) = slice.first_event_block_height else {
+        return (raw_account, timeline);
+    };
+    let fallback: std::thread::Result<Result<Option<Vec<u8>>>> =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            snapshot.raw_account_at(&slice.near_account_id, block_height)
+        }));
+    match fallback {
+        Ok(Ok(Some(bytes))) => {
+            timeline.events.remove(0);
+            (Some(bytes), timeline)
+        }
+        _ => (raw_account, timeline),
+    }
+}
+
 /// Reconcile one user. Never panics — a bad account produces a row, not a
 /// crash. `status` is one of:
 /// - `ok` / `no_baseline` — succeeded.
@@ -138,6 +179,9 @@ pub fn reconcile_user(
         }
         Ok(Ok(v)) => v,
     };
+
+    let (raw_account, timeline) =
+        apply_block_height_fallback(snapshot, &slice, raw_account, timeline);
 
     // A non-authoritative source (the local `snapshots` cache) missing a row
     // is only a real gap for an account the export says existed at H — a

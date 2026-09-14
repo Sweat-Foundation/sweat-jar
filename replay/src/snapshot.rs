@@ -35,6 +35,23 @@ pub trait SnapshotSource: Send + Sync {
     /// creates it, exactly as the real contract's `get_or_create_account_mut`
     /// does) rather than "this source doesn't know" (a gap — `no_baseline`).
     fn is_authoritative(&self) -> bool;
+
+    /// Re-fetch state at an arbitrary historical block height — the fallback
+    /// for an account whose block-H baseline is confirmed empty but whose
+    /// first action isn't a `Deposit` (the only action that auto-creates an
+    /// account; anything else as the first action means something invisible
+    /// to the tracked event types created it — e.g. an FT-transfer migration
+    /// from a previous contract version, which writes storage directly and
+    /// emits no event at all). Querying at that first event's own block
+    /// height returns state as of right after it executed, so the caller
+    /// should drop that leading event before replaying against the result.
+    ///
+    /// Default: unsupported (`Ok(None)`) — only a live archival RPC can query
+    /// an arbitrary height; a `None` here is never treated as "confirmed
+    /// empty", just "didn't try".
+    fn raw_account_at(&self, _near_account_id: &str, _block_height: u64) -> Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
 }
 
 /// Reads the `snapshots` table of a replay DB.
@@ -98,8 +115,9 @@ impl ArchivalRpcSnapshotSource {
         }
     }
 
-    /// Build the `query`/`call_function` request body for `get_account(near_id)`.
-    fn request_body(&self, near_account_id: &str) -> near_sdk::serde_json::Value {
+    /// Build the `query`/`call_function` request body for `get_account(near_id)`
+    /// at an arbitrary block height.
+    fn request_body(&self, near_account_id: &str, block_height: u64) -> near_sdk::serde_json::Value {
         use base64::prelude::{Engine, BASE64_STANDARD};
         let args = near_sdk::serde_json::json!({ "account_id": near_account_id });
         let args_base64 = BASE64_STANDARD.encode(near_sdk::serde_json::to_vec(&args).unwrap());
@@ -107,12 +125,21 @@ impl ArchivalRpcSnapshotSource {
             "jsonrpc": "2.0", "id": "1", "method": "query",
             "params": {
                 "request_type": "call_function",
-                "block_id": self.block_height,
+                "block_id": block_height,
                 "account_id": self.jar_contract,
                 "method_name": "get_account",
                 "args_base64": args_base64,
             }
         })
+    }
+
+    /// Shared fetch path for both the fixed block-H query and the
+    /// arbitrary-height fallback.
+    fn fetch_at(&self, near_account_id: &str, block_height: u64) -> Result<Option<Vec<u8>>> {
+        let resp = http_post_json(&self.rpc_url, &self.request_body(near_account_id, block_height), self.api_key.as_deref())
+            .with_context(|| format!("get_account({near_account_id}) @ block {block_height}"))?;
+        parse_get_account_response(&resp)
+            .with_context(|| format!("parsing get_account({near_account_id}) response"))
     }
 }
 
@@ -170,20 +197,18 @@ fn http_post_json(
 
 impl SnapshotSource for ArchivalRpcSnapshotSource {
     fn raw_account(&self, _account_id: i64, near_account_id: &str) -> Result<Option<Vec<u8>>> {
-        let resp = http_post_json(
-            &self.rpc_url,
-            &self.request_body(near_account_id),
-            self.api_key.as_deref(),
-        )
-        .with_context(|| format!("get_account({near_account_id}) @ block {}", self.block_height))?;
-        parse_get_account_response(&resp)
-            .with_context(|| format!("parsing get_account({near_account_id}) response"))
+        self.fetch_at(near_account_id, self.block_height)
     }
 
     /// A live `get_account` call is a definitive on-chain answer: `Ok(None)`
     /// means the account genuinely had no state at block H.
     fn is_authoritative(&self) -> bool {
         true
+    }
+
+    /// A real archival query, parametrized to an arbitrary height.
+    fn raw_account_at(&self, near_account_id: &str, block_height: u64) -> Result<Option<Vec<u8>>> {
+        self.fetch_at(near_account_id, block_height)
     }
 }
 
@@ -255,7 +280,7 @@ mod tests {
     #[test]
     fn archival_request_body_shape() {
         let src = ArchivalRpcSnapshotSource::fastnear("v2.jars.sweat", crate::parse::H_BLOCK);
-        let body = src.request_body("abc123");
+        let body = src.request_body("abc123", crate::parse::H_BLOCK);
         let p = &body["params"];
         assert_eq!(p["request_type"], "call_function");
         assert_eq!(p["method_name"], "get_account");

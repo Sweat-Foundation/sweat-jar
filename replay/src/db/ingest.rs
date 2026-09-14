@@ -56,6 +56,7 @@ pub fn build_db(conn: &mut Connection, opts: &BuildOpts) -> Result<Vec<(String, 
          SELECT e.backend_account_id,
                 epoch_ms(e.block_timestamp_utc) AS ts_ms,
                 e.log_index,
+                e.block_height,
                 e.event,
                 e.role,
                 e.payload

@@ -119,6 +119,50 @@ fn contract_panic_is_an_error_not_a_failure() {
     assert!(!row.status.starts_with("failure:"), "row: {row:?}");
 }
 
+/// Confirms "no state at H" (like a real archival `null`), but additionally
+/// answers `raw_account_at` for one specific block — the fixture's stand-in
+/// for a real archival node that can serve any historical height.
+struct FallbackOnly {
+    block_height: u64,
+    state_json: &'static str,
+}
+
+impl SnapshotSource for FallbackOnly {
+    fn raw_account(&self, _account_id: i64, _near_account_id: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    fn is_authoritative(&self) -> bool {
+        true
+    }
+    fn raw_account_at(&self, _near_account_id: &str, block_height: u64) -> anyhow::Result<Option<Vec<u8>>> {
+        if block_height == self.block_height {
+            Ok(Some(replay::snapshot::account_state_json_to_raw(self.state_json)?))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+#[test]
+fn account_not_found_via_invisible_creation_recovers_via_block_height_fallback() {
+    let d = tempfile::tempdir().unwrap();
+    let dbp = build_fixture_db(d.path());
+    let c = db::open_read(&dbp).unwrap();
+
+    // account 600: first event is a `claim` (no deposit anywhere in the
+    // export) at block 190000900 — stands in for an FT-transfer migration
+    // that wrote the account's storage directly with no emitted event. The
+    // block-H baseline is confirmed empty by an authoritative source, so the
+    // engine re-fetches state at that block instead of erroring "not found".
+    let snap = FallbackOnly {
+        block_height: 190_000_900,
+        state_json: r#"{"nonce":1,"jars":{"365d_12apy":{"deposits":[["1774000000000","1000000000000000000000"]],"cache":{"updated_at":"1774483200000","interest":"0"},"is_pending_withdraw":false,"claim_remainder":"0"}},"score":{"updated_at":1774483200000,"history":[]},"is_penalty_applied":false,"features":{},"timezone":0}"#,
+    };
+
+    let row = reconcile_user(&c, 600, &products(), &snap).unwrap();
+    assert_eq!(row.status, "ok", "row: {row:?}");
+}
+
 #[test]
 fn fresh_account_with_claim_reconciles_ok() {
     let d = tempfile::tempdir().unwrap();

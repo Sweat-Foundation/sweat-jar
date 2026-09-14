@@ -14,6 +14,13 @@ pub struct UserSlice {
     pub timezone_ms: Option<i64>,
     /// Sum of every `claim` event's payload `items` in the replay window.
     pub onchain_claimed: u128,
+    /// Block height of the timeline's first event (post-sort), if it has any
+    /// events. Used by the block-height-fallback: when the block-H baseline
+    /// is confirmed empty but this first action isn't a `Deposit`, the
+    /// account must have been created invisibly (e.g. an FT-transfer
+    /// migration) before this block — so re-fetching state at this height
+    /// recovers it.
+    pub first_event_block_height: Option<u64>,
 }
 
 /// Reads every event row for `backend_account_id` and builds a sorted engine
@@ -30,7 +37,7 @@ pub fn load_user(conn: &Connection, backend_account_id: i64) -> Result<(UserSlic
         .with_context(|| format!("account {backend_account_id} not in accounts table"))?;
 
     let mut stmt = conn.prepare(
-        "SELECT ts_ms, log_index, event, role, payload FROM events \
+        "SELECT ts_ms, log_index, event, role, payload, block_height FROM events \
          WHERE backend_account_id = ? ORDER BY ts_ms, log_index",
     )?;
     let rows = stmt
@@ -41,14 +48,19 @@ pub fn load_user(conn: &Connection, backend_account_id: i64) -> Result<(UserSlic
                 r.get::<_, String>(2)?,
                 r.get::<_, Option<String>>(3)?,
                 r.get::<_, String>(4)?,
+                r.get::<_, i64>(5)? as u64,
             ))
         })?
         .collect::<duckdb::Result<Vec<_>>>()?;
 
     let mut events = Vec::new();
+    // Keyed by (ts_ms, seq) — unique per account, and exactly the sort
+    // prefix `Timeline::sorted()` uses — so the first sorted event's block
+    // height can be looked back up after sorting.
+    let mut block_heights: std::collections::HashMap<(u64, u64), u64> = std::collections::HashMap::new();
     let mut onchain_claimed = 0u128;
 
-    for (ts_ms, log_index, event, role, payload) in rows {
+    for (ts_ms, log_index, event, role, payload, block_height) in rows {
         let Some(parsed) = parse_event(&event, role.as_deref(), &payload)
             .with_context(|| format!("account {backend_account_id} ts {ts_ms} event {event}"))?
         else {
@@ -89,10 +101,22 @@ pub fn load_user(conn: &Connection, backend_account_id: i64) -> Result<(UserSlic
             }
         };
         events.push(Event { ts_ms, seq: log_index, action });
+        block_heights.insert((ts_ms, log_index), block_height);
     }
 
+    let timeline = Timeline { events }.sorted();
+    let first_event_block_height =
+        timeline.events.first().and_then(|first| block_heights.get(&(first.ts_ms, first.seq)).copied());
+
     Ok((
-        UserSlice { backend_account_id, near_account_id, existed_at_start, timezone_ms, onchain_claimed },
-        Timeline { events }.sorted(),
+        UserSlice {
+            backend_account_id,
+            near_account_id,
+            existed_at_start,
+            timezone_ms,
+            onchain_claimed,
+            first_event_block_height,
+        },
+        timeline,
     ))
 }

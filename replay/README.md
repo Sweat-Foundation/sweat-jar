@@ -286,14 +286,24 @@ Root-caused from real `error:`/`failure:` rows on production data:
 - **`Account … is not found in smart contract`** — this account's very first
   captured event (in `events/`) is a `claim`/`withdraw_all`/`restake`/
   `record_score`, not a `deposit` — i.e. whatever created its jars isn't one
-  of the 7 event types this export tracks (most likely a deposits-airdrop, a
-  separate contract feature with no corresponding event in `interest_replay/`).
-  `deposit` already auto-creates the account (`get_or_create_account_mut`,
-  same as production), so this is **not fixable by "create on deposit"** —
-  there's no deposit event to trigger on. It's a gap in the source data for a
-  small number of accounts, confirmed against a live archival lookup (`null`
-  at block `H`, consistent with "genuinely fresh, but its real first action
-  isn't in our 7 event types").
+  of the 7 event types this export tracks (most likely an `FtMessage::Migrate`
+  transfer from a previous contract version, which writes storage directly
+  via `store_account_raw` and emits no event at all). `deposit` already
+  auto-creates the account (`get_or_create_account_mut`, same as
+  production), so this was **not fixable by "create on deposit"** — there's
+  no deposit event to trigger on.
+
+  Instead of tracking or modeling the invisible creation, `reconcile_user`
+  (via `apply_block_height_fallback`) re-fetches state directly: when an
+  authoritative source (archival RPC) confirms no state at block `H` *and*
+  the account's first action isn't a `Deposit`, it re-queries `get_account`
+  at that first event's own block height. NEAR's view-at-height semantics
+  return state as of right after that block's receipts ran — i.e. already
+  reflecting the invisible creation and the first event's effect — so that
+  leading event is dropped from the timeline and the rest replays against
+  the fetched baseline. This only works with `--archival-rpc-url` (an
+  authoritative source); the local `snapshots` cache can't serve arbitrary
+  heights and this account instead lands on `no_baseline`.
 - **`Not enough funds to restake`** — the documented `RestakeAll` divergence
   above: a multi-jar `from` set is replayed as `restake_all`, which sweeps
   *every* currently-matured jar rather than just the two-or-more named in the
@@ -308,7 +318,7 @@ Root-caused from real `error:`/`failure:` rows on production data:
 ## `db` schema
 
 `replay/src/db/schema.rs`. Tables: `events` (`backend_account_id, ts_ms,
-log_index, event, role, payload`), `accounts` (`backend_account_id,
+log_index, block_height, event, role, payload`), `accounts` (`backend_account_id,
 near_account_id, existed_at_start, timezone_ms`), `snapshots`
 (`backend_account_id, state_json`), `meta` (`key, value`), `results` (`run`'s
 output — `backend_account_id` PK, the `reconciliation.csv` columns, plus

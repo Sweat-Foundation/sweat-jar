@@ -14,6 +14,7 @@ use sweat_jar::replay::engine::{self, ReplayStatus};
 use crate::db;
 use crate::parse;
 use crate::products::{self, JAR_CONTRACT};
+use crate::reconcile::apply_block_height_fallback;
 use crate::snapshot::{ArchivalRpcSnapshotSource, DbSnapshotSource, SnapshotSource};
 use crate::timeline::load_user;
 
@@ -42,6 +43,8 @@ pub fn explain(opts: &ExplainOpts) -> Result<()> {
     // Always ask — `existed_at_start` is the export's classification, not
     // ground truth; a live archival lookup is authoritative either way.
     let raw_account = snapshot.raw_account(opts.account, &slice.near_account_id)?;
+    let (raw_account, timeline) =
+        apply_block_height_fallback(snapshot.as_ref(), &slice, raw_account, timeline);
     let had_baseline = raw_account.is_some();
     let no_baseline = !had_baseline && !snapshot.is_authoritative() && slice.existed_at_start;
     let account_id: near_sdk::AccountId = slice
