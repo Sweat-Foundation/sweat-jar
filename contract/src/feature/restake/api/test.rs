@@ -1,4 +1,4 @@
-#![cfg(test)]
+#![cfg(any(test, feature = "replay-engine"))]
 
 use near_sdk::PromiseOrValue;
 

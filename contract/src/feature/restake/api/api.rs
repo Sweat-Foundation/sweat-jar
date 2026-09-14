@@ -24,7 +24,7 @@ use crate::{
     Contract, ContractExt,
 };
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "replay-engine")))]
 #[mutants::skip] // Covered by integration tests
 pub(crate) mod gas {
     use near_sdk::Gas;

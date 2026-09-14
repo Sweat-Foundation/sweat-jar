@@ -1,12 +1,12 @@
 use std::convert::Into;
 
 use near_plugins::{access_control_any, AccessControllable};
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "replay-engine")))]
 use near_sdk::env;
 use near_sdk::{ext_contract, json_types::U128, near, PromiseOrValue};
 use sweat_jar_model::{api::FeeApi, TokenAmount};
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "replay-engine")))]
 use crate::feature::{ft_interface::FungibleTokenInterface, withdraw::api::gas::GAS_FOR_AFTER_FEE_WITHDRAW};
 use crate::{common::env::env_ext, Contract, ContractExt, Roles};
 
@@ -25,7 +25,7 @@ impl FeeApi for Contract {
     }
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "replay-engine")))]
 impl Contract {
     #[mutants::skip] // Covered by integration tests
     fn withdraw_fee_internal(&mut self, amount: TokenAmount) -> PromiseOrValue<U128> {
@@ -40,7 +40,7 @@ impl Contract {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "replay-engine"))]
 impl Contract {
     fn withdraw_fee_internal(&mut self, amount: TokenAmount) -> PromiseOrValue<U128> {
         PromiseOrValue::Value(self.after_fee_withdrawn(amount.into()))

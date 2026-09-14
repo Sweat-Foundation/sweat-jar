@@ -27,6 +27,7 @@ impl Contract {
     }
 }
 
+#[cfg_attr(all(feature = "replay-engine", not(test)), allow(dead_code))]
 pub(crate) fn assert_gas<Message: Display>(gas_needed: u64, error: impl FnOnce() -> Message) {
     let gas_left = env::prepaid_gas().as_gas() - env::used_gas().as_gas();
 

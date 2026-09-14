@@ -14,10 +14,15 @@ use sweat_jar_model::{
     TokenAmount,
 };
 
+#[cfg(all(feature = "replay-engine", target_arch = "wasm32"))]
+compile_error!("replay-engine is a host-only feature and must never reach the contract wasm");
+
 mod common;
 mod doc;
 mod feature;
 mod migration;
+#[cfg(any(test, feature = "replay-engine"))]
+pub mod replay;
 
 pub const PACKAGE_NAME: &str = env!("CARGO_PKG_NAME");
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

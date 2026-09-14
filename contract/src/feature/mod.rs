@@ -2,7 +2,7 @@ pub mod account;
 pub mod airdrop;
 pub mod claim;
 pub mod fee;
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "replay-engine")))]
 pub mod ft_interface;
 pub mod ft_receiver;
 pub mod penalty;

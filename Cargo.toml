@@ -3,7 +3,25 @@
 resolver = "2"
 
 default-members = ["contract"]
-members = ["primitives", "model", "contract"]
+members = ["primitives", "model", "contract", "replay"]
+
+# The `replay` binary relies on `std::panic::catch_unwind` to turn a single
+# user's contract panic into an `error:` CSV row instead of killing the run.
+# `.cargo/config.toml` sets `panic = "abort"` on the release profile (for the
+# contract wasm), which makes `catch_unwind` a no-op. Build `replay` with
+# `--profile release-replay` to get an optimized *unwinding* binary.
+[profile.release-replay]
+inherits = "release"
+panic = "unwind"
+# near-sys declares `panic_utf8` as a plain `extern "C"` (nounwind), but near-sdk's
+# unit-testing mock defines it `extern "C-unwind"` and relies on a Rust panic
+# unwinding back out through it. Optimized builds honour the nounwind decl and
+# abort ("failed to initiate panic, error 3") when a deep `env::panic_str` /
+# `require!` failure tries to unwind. With debug-assertions on, `require!` expands
+# to `assert!` (a plain Rust panic) instead, which unwinds cleanly into
+# `catch_unwind`. overflow-checks matches near-sdk's own test builds.
+debug-assertions = true
+overflow-checks = true
 
 [workspace.dependencies]
 anyhow = "1.0.75"

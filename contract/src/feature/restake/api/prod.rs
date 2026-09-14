@@ -1,4 +1,4 @@
-#![cfg(not(test))]
+#![cfg(not(any(test, feature = "replay-engine")))]
 
 use near_sdk::{env, env::panic_str, PromiseOrValue};
 

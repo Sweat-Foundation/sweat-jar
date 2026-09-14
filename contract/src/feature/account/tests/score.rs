@@ -1108,6 +1108,11 @@ mod account_score_tests {
     /// of the 2-day buffer before it is ever settled. Fixed by stamping
     /// `updated_at` in `AccountScore::shift()` / `wipe()`, as the pre-v4.1.0
     /// `reset_score()` did.
+    ///
+    /// Not run under `replay-engine`: that build intentionally reverts this
+    /// fix to reproduce real historical (pre-v4.2.3) chain behavior — see
+    /// `model/src/data/score/mod.rs`.
+    #[cfg(any(not(feature = "replay-engine"), feature = "corrected-score-window"))]
     #[rstest]
     fn claim_before_record_score_does_not_destroy_interest(
         admin: AccountId,
@@ -1264,6 +1269,9 @@ mod account_score_tests {
     ///
     /// (Single `withdraw` and `restake` do NOT call `settle_interest` — they use
     /// the account-level cache update — so they are not exposed to this.)
+    ///
+    /// Not run under `replay-engine` — see `claim_before_record_score_does_not_destroy_interest`.
+    #[cfg(any(not(feature = "replay-engine"), feature = "corrected-score-window"))]
     #[rstest]
     fn withdraw_all_before_record_score_does_not_destroy_interest(
         admin: AccountId,

@@ -24,7 +24,7 @@ impl Contract {
 
     // UnorderedMap doesn't have cache and deserializes `Product` on each get
     // This cached getter significantly reduces gas usage
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "replay-engine")))]
     #[mutants::skip]
     pub(crate) fn get_product(&self, product_id: &ProductId) -> Product {
         self.products_cache
@@ -39,7 +39,7 @@ impl Contract {
     }
 
     // We should avoid this caching behaviour in tests though
-    #[cfg(test)]
+    #[cfg(any(test, feature = "replay-engine"))]
     pub(crate) fn get_product(&self, product_id: &ProductId) -> Product {
         self.products
             .get(product_id)
