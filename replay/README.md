@@ -99,6 +99,26 @@ flat per account (~0.4s on FastNEAR). For a lot of accounts, replay CPU time
 rivals or exceeds the archival fetch — worth measuring on a sample before
 assuming the RPC is the only bottleneck.
 
+**Tracking a run in progress.** `run` prints two kinds of line to stderr as it
+goes — both visible in real time via `docker logs -f` if you're running it
+remotely (see `replay/docker/README.md`):
+
+- `ERROR account=<id> error:<msg>` — one line the moment any account's status
+  comes back `error:...` (a contract panic, an unreachable/throttled archival
+  RPC, …). This is the only live signal for errors; without it they're
+  invisible until the final summary or a CSV export.
+- `PROGRESS <done>/<total> (<pct>%) ok=<n> error=<n> no_baseline=<n>
+  elapsed=<dur> rate=<n>/s eta=<dur>` — a heartbeat every 30s by default (set
+  `REPLAY_PROGRESS_INTERVAL_SECS`, `0` to disable), plus one final line at
+  100% when the run finishes. `<total>` is this invocation's worklist (already
+  excludes anything `--force` didn't ask to redo), so a resumed run's
+  percentage is progress on what's left, not on the full population.
+
+You can also just query the (already-written) `results` table directly from
+another terminal at any time — DuckDB allows concurrent readers alongside the
+one writer — e.g. `duckdb x.duckdb "SELECT status, count(*) FROM results GROUP BY 1"`,
+or run `export-csv` for a point-in-time CSV snapshot without stopping `run`.
+
 **Results live in the database, not just the CSV.** Each `ReconRow` is upserted
 into the `results` table (keyed by `backend_account_id`) as soon as it's
 computed — a crash or a killed process loses at most the row currently in

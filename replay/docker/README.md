@@ -64,6 +64,20 @@ docker run --rm -d --name replay -v "$(pwd)/test_data:/data" \
 docker logs -f replay
 ```
 
+`docker logs -f` is also how you track execution and errors while it's
+running: `run` prints an `ERROR account=<id> ...` line to stderr the moment
+any account fails, and a `PROGRESS <done>/<total> (<pct>%) ok=.. error=..
+elapsed=.. eta=..` heartbeat every 30s (`REPLAY_PROGRESS_INTERVAL_SECS` to
+change the interval, `0` to silence it) — see `replay/README.md` for the
+exact line formats. You can also pull a point-in-time snapshot of `results`
+at any time without stopping the run — DuckDB allows concurrent readers
+alongside the one writer (the image has no `duckdb` CLI, but `export-csv` is
+the same thing):
+
+```sh
+./replay/docker/run.sh -- export-csv --db /data/replay.duckdb --out /data/progress-snapshot.csv
+```
+
 ### Environment variables
 
 All optional; sensible defaults assume the whole population, unthrottled by
@@ -86,6 +100,7 @@ FastNEAR's free tier only if you don't set a key.
 | `REPLAY_REBUILD_DB` | `0` | set to `1` to re-run `build-db` even if `REPLAY_DB` exists |
 | `REPLAY_CORRECTED_SCORE_WINDOW` | `0` | set to `1` to reconcile against "what should have been paid" instead of "what was actually paid" — see the main `replay/README.md` |
 | `REPLAY_TIMING` | — | set to `1` for the per-account load breakdown (see `replay/README.md`) |
+| `REPLAY_PROGRESS_INTERVAL_SECS` | `30` | seconds between `PROGRESS` heartbeat lines on stderr; `0` disables |
 | `FASTNEAR_API_KEY` | — | archival RPC auth; strongly recommended for a full run — the free tier throttles hard above ~4 concurrent requests |
 
 ### Sharding across multiple machines

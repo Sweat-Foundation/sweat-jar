@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use sweat_jar_model::data::product::Product;
@@ -58,6 +58,19 @@ pub fn parse_shard(s: &str) -> Result<(u64, u64)> {
     anyhow::ensure!(n > 0, "shard count must be > 0");
     anyhow::ensure!(i < n, "shard index {i} must be < count {n}");
     Ok((i, n))
+}
+
+/// `12h34m56s` / `3m04s` / `41s` — short enough for a one-line log heartbeat.
+fn format_duration(d: Duration) -> String {
+    let total = d.as_secs();
+    let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60);
+    if h > 0 {
+        format!("{h}h{m:02}m{s:02}s")
+    } else if m > 0 {
+        format!("{m}m{s:02}s")
+    } else {
+        format!("{s}s")
+    }
 }
 
 fn install_quiet_panic_hook() {
@@ -117,6 +130,7 @@ pub fn run(opts: &RunOpts) -> Result<RunSummary> {
     db::schema::init_schema(&db::open_write(&opts.db)?)?;
 
     let worklist = build_worklist(opts)?;
+    let total = worklist.len();
 
     let products: Arc<Vec<Product>> =
         Arc::new(crate::products::load_products(&opts.products)?);
@@ -165,6 +179,16 @@ pub fn run(opts: &RunOpts) -> Result<RunSummary> {
                 sum_actual: 0,
                 over_tolerance: 0,
             };
+            // Set REPLAY_PROGRESS_INTERVAL_SECS=0 to disable; default 30s. This
+            // is the only routine visibility into an unattended multi-hour/day
+            // run (e.g. `docker logs -f`) — everything else is silent until the
+            // final summary main() prints after `run()` returns.
+            let heartbeat_interval = std::env::var("REPLAY_PROGRESS_INTERVAL_SECS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(30);
+            let run_start = Instant::now();
+            let mut last_heartbeat = Instant::now();
             for row in rx {
                 s.processed += 1;
                 s.sum_calculated += row.calculated_total_claim.parse::<u128>().unwrap_or(0);
@@ -182,7 +206,28 @@ pub fn run(opts: &RunOpts) -> Result<RunSummary> {
                     s.no_baseline += 1;
                 } else if row.status.starts_with("error:") {
                     s.errored += 1;
+                    // Printed as each one happens, not just counted at the end —
+                    // this is what lets you see e.g. archival throttling as it's
+                    // occurring instead of only after the whole run finishes.
+                    eprintln!("ERROR account={} {}", row.account_id, row.status);
                 }
+
+                if heartbeat_interval > 0 && last_heartbeat.elapsed() >= Duration::from_secs(heartbeat_interval) {
+                    let elapsed = run_start.elapsed();
+                    let rate = s.processed as f64 / elapsed.as_secs_f64().max(1.0);
+                    let pct = 100.0 * s.processed as f64 / total.max(1) as f64;
+                    let eta = if rate > 0.0 {
+                        format_duration(Duration::from_secs_f64((total - s.processed) as f64 / rate))
+                    } else {
+                        "?".to_string()
+                    };
+                    eprintln!(
+                        "PROGRESS {}/{total} ({pct:.1}%) ok={} error={} no_baseline={} elapsed={} rate={rate:.2}/s eta={eta}",
+                        s.processed, s.ok, s.errored, s.no_baseline, format_duration(elapsed),
+                    );
+                    last_heartbeat = Instant::now();
+                }
+
                 let computed_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64;
                 upsert
                     .execute(duckdb::params![
@@ -197,6 +242,13 @@ pub fn run(opts: &RunOpts) -> Result<RunSummary> {
                         computed_at,
                     ])
                     .with_context(|| format!("upsert result for account {}", row.account_id))?;
+            }
+            if heartbeat_interval > 0 {
+                let processed = s.processed;
+                eprintln!(
+                    "PROGRESS {processed}/{total} (100.0%) ok={} error={} no_baseline={} elapsed={} — done",
+                    s.ok, s.errored, s.no_baseline, format_duration(run_start.elapsed()),
+                );
             }
             drop(upsert);
             if let Some(out_path) = &out_path {
