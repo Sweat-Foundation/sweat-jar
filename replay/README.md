@@ -304,16 +304,24 @@ Root-caused from real `error:`/`failure:` rows on production data:
   the fetched baseline. This only works with `--archival-rpc-url` (an
   authoritative source); the local `snapshots` cache can't serve arbitrary
   heights and this account instead lands on `no_baseline`.
-- **`Not enough funds to restake`** — the documented `RestakeAll` divergence
-  above: a multi-jar `from` set is replayed as `restake_all`, which sweeps
-  *every* currently-matured jar rather than just the two-or-more named in the
-  real event. If the replay's computed matured total (at that exact point in
-  its own timeline) is less than the on-chain `restaked` amount — most likely
-  right after an account's first-ever action, before any interest has
-  settled in the replay — the ask can exceed what's available. Rare (~0.1% of
-  accounts in samples); accepted, not fixed (would need modeling exactly
-  which jars a multi-jar restake actually touched, which isn't recoverable
-  from the event alone).
+- **`Not enough funds to restake`** (and the smaller silent `over_tolerance`
+  divergences that cluster right after a multi-jar restake) — a multi-jar
+  `from` set is replayed as `restake_all`, which is deterministic given
+  accurate state: it doesn't consult the on-chain `from` list at all, it
+  recomputes the swept set fresh from the replay's own jar state (deposits +
+  timestamps vs. product terms), exactly like the real contract call. So this
+  isn't an information-loss problem — the divergence is that the replay's
+  jar state at that exact instant can already be a hair off from the real
+  on-chain state (accumulated interest-rounding, timezone estimation, an
+  increment-timestamp clamp earlier in the account's history — the usual
+  small `over_tolerance` sources). Because `restake_all`'s matured-balance
+  cutoff is a sharp boundary, that small prior drift can occasionally flip
+  which jars count as matured or how much of one is liquid at that instant,
+  producing a one-time jump in the `into` jar's composition that then
+  persists through later claims — rather than growing further on its own.
+  Rare (~0.1%-few % of accounts in samples, one restake event each); accepted,
+  not fixed (would need bit-exact interest/timezone reproduction to close
+  entirely).
 
 ## `db` schema
 
