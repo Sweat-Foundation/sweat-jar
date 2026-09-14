@@ -297,4 +297,6 @@ cargo test -p sweat_jar --features replay-engine replay_account_history
 For a long `--archival` run without tying up your own laptop: `replay/docker/`
 has a `Dockerfile`, an entrypoint that wraps the whole `build-db`-then-`run`
 pipeline behind environment variables, and a `run.sh` script to build and
-launch it. See `replay/docker/README.md`.
+launch it. Machine sizing (CPU/RAM/disk/network — building needs ~8 GB RAM,
+the full dataset is ~24 GB, a full run without an API key takes about a
+week) and the full workflow are in `replay/docker/README.md`.

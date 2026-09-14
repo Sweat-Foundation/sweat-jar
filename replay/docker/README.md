@@ -4,6 +4,24 @@ For a long `--archival` run over the full account population without tying up
 your own laptop. Everything here assumes Docker is installed on the target
 machine; nothing else is.
 
+## Machine requirements
+
+Building and running have different footprints — you can build once on a
+beefier machine and `docker save | ssh target docker load` the image onto a
+smaller one if the target is disk-rich but RAM-poor.
+
+| | Building the image | Running it |
+|---|---|---|
+| **CPU** | any (DuckDB's C++ compile is capped at `--jobs 4` in the Dockerfile regardless of core count — see below) | 1 core per `REPLAY_THREADS`; the replay itself is CPU-bound and embarrassingly parallel across accounts, so more cores directly shorten the run **if** the archival RPC isn't the bottleneck (see Network) |
+| **RAM** | **≥8 GB** available to the Docker engine/VM. DuckDB's unity-build translation units are large enough that compiling several in parallel exhausted memory on a 12-core/7.65 GB Docker Desktop VM before the Dockerfile capped `--jobs`; 8 GB with that cap builds cleanly. More RAM lets you raise `--jobs` for a faster build (optional) | small — measured ~90 MB RSS at `--threads 8` against a live archival sample. 2 GB is comfortable for any thread count you'd realistically run |
+| **Disk** | **~60 GB free**, headroom for Docker's build cache (compiling DuckDB twice — default + `corrected-score-window` — leaves sizable intermediate layers before the final image is assembled; reclaim after with `docker builder prune`) | `test_data/interest_replay/` (**~24 GB**, copied over once) + the full-population `.duckdb` (**~5.1 GB**, built once, `results` adds well under 1 GB as it fills) + a CSV export (well under 1 GB) + the image itself (**~150 MB**) |
+| **Network** | pulls `rust:1.93-bookworm` (~1.5 GB, one-time) | outbound HTTPS to the archival RPC endpoint (one request per account, ~0.4 s each — bandwidth is trivial, but the connection needs to stay up for the life of the run) and, once, to mainnet RPC if `products.json` needs auto-fetching. Plus the one-time transfer of the 24 GB dataset onto the machine |
+| **Uptime** | — | needs to stay up for the whole run. **Without `FASTNEAR_API_KEY`, the free archival tier throttles above ~4 concurrent requests — a full-population run at `--threads 4` is on the order of a week.** An authenticated key (see the main `replay/README.md`) is the one thing that meaningfully shortens this; worth measuring your key's actual safe concurrency on a sample before committing `--threads` to a long run. This is exactly why `run` is resumable and why you'd run it detached (`docker run -d`) or under `screen`/`tmux` — see below |
+
+A cheap always-on VM (a handful of vCPUs, 8 GB+ RAM, 80 GB+ SSD) covers both
+columns at once and is the simplest option if you don't already have a bigger
+machine to build on.
+
 ## 1. Get the repo and the data there
 
 ```sh
