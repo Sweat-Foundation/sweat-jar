@@ -76,9 +76,22 @@ fn zero_calc_row(slice: &UserSlice, status: impl Into<String>) -> ReconRow {
     }
 }
 
-/// Reconcile one user. Never panics — a panic in snapshot parsing or the engine
-/// becomes `status = "error:<msg>"`. Returns `Err` only for a DB/IO failure that
-/// isn't user-specific.
+/// Reconcile one user. Never panics — a bad account produces a row, not a
+/// crash. `status` is one of:
+/// - `ok` / `no_baseline` — succeeded.
+/// - `error:<msg>` — the replay ran cleanly and the *contract logic itself*
+///   panicked given this account's real history (e.g. "Timezone is not set",
+///   "Account … is not found", "Not enough funds to restake"). Rerunning
+///   won't change these — see `replay/README.md`'s "Known error causes" for
+///   what each one means and whether it's expected.
+/// - `failure:<msg>` — the tool didn't get a clean read on this account:
+///   the archival RPC fetch errored/panicked, or `run_timeline` itself was
+///   escaped by an unexpected panic (a genuine bug, not a modeled contract
+///   panic). Worth retrying — `run --force --accounts <ids>` on just the
+///   `failure:` rows after investigating (or after getting/rotating an
+///   archival API key, if these are RPC timeouts).
+///
+/// Returns `Err` only for a DB/IO failure that isn't user-specific.
 ///
 /// The `catch_unwind` around `run_timeline` is load-bearing, not
 /// belt-and-suspenders: `run_timeline`'s own guard has been observed to leak a
@@ -110,13 +123,16 @@ pub fn reconcile_user(
         }));
     timing.fetch_us = t.elapsed().as_micros();
 
+    // A failed/panicked snapshot fetch is an infra problem (network, RPC
+    // throttling, a malformed response) — the account itself was never
+    // reached, so this is a `failure:`, not an `error:`.
     let raw_account = match baseline_raw {
         Err(_) => {
-            timing.log(backend_account_id, "error:snapshot panic");
-            return Ok(zero_calc_row(&slice, "error:snapshot panic"));
+            timing.log(backend_account_id, "failure:snapshot panic");
+            return Ok(zero_calc_row(&slice, "failure:snapshot panic"));
         }
         Ok(Err(e)) => {
-            let status = format!("error:{}", truncate(&e.to_string()));
+            let status = format!("failure:{}", truncate(&e.to_string()));
             timing.log(backend_account_id, &status);
             return Ok(zero_calc_row(&slice, status));
         }
@@ -128,16 +144,20 @@ pub fn reconcile_user(
     // fresh account is correctly rowless there regardless.
     let no_baseline = raw_account.is_none() && !snapshot.is_authoritative() && slice.existed_at_start;
 
+    // A malformed near_account_id means the account was never even attempted
+    // — same category as a fetch failure, not a modeled contract panic.
     let account_id: near_sdk::AccountId = match slice.near_account_id.parse() {
         Ok(a) => a,
-        Err(_) => return Ok(zero_calc_row(&slice, "error:invalid near_account_id")),
+        Err(_) => return Ok(zero_calc_row(&slice, "failure:invalid near_account_id")),
     };
 
     // `run_timeline` catches contract panics itself, but a second caught panic on
     // one worker thread has been observed to escape `run_timeline`'s internal
     // `catch_unwind` (near-sdk mock harness state after the upfront
-    // `set_timezone`); this guard keeps one bad account from killing the worker —
-    // it becomes an `error:` row like any other.
+    // `set_timezone`); this guard keeps one bad account from killing the worker.
+    // An escape here means run_timeline's own panic-safety broke down for this
+    // account — a genuine bug, not a modeled contract panic — so it's a
+    // `failure:`, not an `error:`.
     //
     // After an escaped panic the worker's thread-local mock storage is in an
     // unknown state; the NEXT account relies on `run_timeline`'s internal
@@ -162,7 +182,7 @@ pub fn reconcile_user(
                 .map(|s| (*s).to_string())
                 .or_else(|| e.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "engine panic".to_string());
-            let status = format!("error:{}", truncate(&msg));
+            let status = format!("failure:{}", truncate(&msg));
             timing.log(backend_account_id, &status);
             return Ok(zero_calc_row(&slice, status));
         }

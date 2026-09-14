@@ -83,11 +83,15 @@ docker logs -f replay
 ```
 
 `docker logs -f` is also how you track execution and errors while it's
-running: `run` prints an `ERROR account=<id> ...` line to stderr the moment
-any account fails, and a `PROGRESS <done>/<total> (<pct>%) ok=.. error=..
-elapsed=.. eta=..` heartbeat every 30s (`REPLAY_PROGRESS_INTERVAL_SECS` to
-change the interval, `0` to silence it) — see `replay/README.md` for the
-exact line formats. You can also pull a point-in-time snapshot of `results`
+running: `run` prints an `ERROR account=<id> ...` or `FAILURE account=<id>
+...` line to stderr the moment any account fails — `ERROR` for an expected
+contract-logic divergence (not retryable), `FAILURE` for an infra problem
+like an RPC error (worth retrying) — plus a `PROGRESS <done>/<total> (<pct>%)
+ok=.. error=.. failure=.. elapsed=.. eta=..` heartbeat every 30s
+(`REPLAY_PROGRESS_INTERVAL_SECS` to change the interval, `0` to silence it).
+See `replay/README.md`'s "`error:` vs `failure:`" section for the exact line
+formats and what to do about each. You can also pull a point-in-time snapshot
+of `results`
 at any time without stopping the run — DuckDB allows concurrent readers
 alongside the one writer (the image has no `duckdb` CLI, but `export-csv` is
 the same thing):

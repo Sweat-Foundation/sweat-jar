@@ -67,10 +67,11 @@ fn main() -> anyhow::Result<()> {
                 force,
             })?;
             println!(
-                "processed {} | ok {} | error {} | no_baseline {} | over_tolerance {}",
+                "processed {} | ok {} | error {} | failure {} | no_baseline {} | over_tolerance {}",
                 summary.processed,
                 summary.ok,
                 summary.errored,
+                summary.failed,
                 summary.no_baseline,
                 summary.over_tolerance
             );

@@ -41,7 +41,14 @@ pub struct RunOpts {
 pub struct RunSummary {
     pub processed: usize,
     pub ok: usize,
+    /// `status = "error:.."` — the contract logic itself panicked given this
+    /// account's real history. Not retryable; rerunning gives the same result.
     pub errored: usize,
+    /// `status = "failure:.."` — the tool didn't get a clean read on this
+    /// account (RPC error, an unexpected panic escaping the engine's own
+    /// guard). Worth retrying, e.g. after fixing connectivity or getting an
+    /// archival API key.
+    pub failed: usize,
     pub no_baseline: usize,
     pub sum_calculated: u128,
     pub sum_actual: u128,
@@ -174,6 +181,7 @@ pub fn run(opts: &RunOpts) -> Result<RunSummary> {
                 processed: 0,
                 ok: 0,
                 errored: 0,
+                failed: 0,
                 no_baseline: 0,
                 sum_calculated: 0,
                 sum_actual: 0,
@@ -192,10 +200,12 @@ pub fn run(opts: &RunOpts) -> Result<RunSummary> {
             for row in rx {
                 s.processed += 1;
                 s.sum_calculated += row.calculated_total_claim.parse::<u128>().unwrap_or(0);
-                // Hard-failed rows (`status` "error:...") carry `actual_total_claim`
-                // "0" because `load_user` failed and the on-chain figure is
-                // genuinely unavailable, so `sum_actual` under-counts by those
-                // users' real claims. They are tallied in `errored` instead.
+                // Rows with no calculated total (`error:`/`failure:`) carry
+                // `actual_total_claim` "0" only when `load_user` itself failed —
+                // otherwise it's the real on-chain figure, still meaningful for
+                // sum_actual. Either way these are tallied in errored/failed
+                // instead of ok, so they don't skew sum_calculated/sum_actual's
+                // ratio.
                 s.sum_actual += row.actual_total_claim.parse::<u128>().unwrap_or(0);
                 if row.status == "ok" {
                     s.ok += 1;
@@ -207,9 +217,16 @@ pub fn run(opts: &RunOpts) -> Result<RunSummary> {
                 } else if row.status.starts_with("error:") {
                     s.errored += 1;
                     // Printed as each one happens, not just counted at the end —
-                    // this is what lets you see e.g. archival throttling as it's
-                    // occurring instead of only after the whole run finishes.
+                    // this is what lets you see these live instead of only after
+                    // the whole run finishes. `error:` = the contract logic
+                    // itself panicked given this account's real history — not
+                    // retryable, see reconcile::reconcile_user's doc.
                     eprintln!("ERROR account={} {}", row.account_id, row.status);
+                } else if row.status.starts_with("failure:") {
+                    s.failed += 1;
+                    // `failure:` = the tool didn't get a clean read (RPC error,
+                    // an unexpected engine panic) — worth retrying.
+                    eprintln!("FAILURE account={} {}", row.account_id, row.status);
                 }
 
                 if heartbeat_interval > 0 && last_heartbeat.elapsed() >= Duration::from_secs(heartbeat_interval) {
@@ -222,8 +239,8 @@ pub fn run(opts: &RunOpts) -> Result<RunSummary> {
                         "?".to_string()
                     };
                     eprintln!(
-                        "PROGRESS {}/{total} ({pct:.1}%) ok={} error={} no_baseline={} elapsed={} rate={rate:.2}/s eta={eta}",
-                        s.processed, s.ok, s.errored, s.no_baseline, format_duration(elapsed),
+                        "PROGRESS {}/{total} ({pct:.1}%) ok={} error={} failure={} no_baseline={} elapsed={} rate={rate:.2}/s eta={eta}",
+                        s.processed, s.ok, s.errored, s.failed, s.no_baseline, format_duration(elapsed),
                     );
                     last_heartbeat = Instant::now();
                 }
@@ -246,8 +263,8 @@ pub fn run(opts: &RunOpts) -> Result<RunSummary> {
             if heartbeat_interval > 0 {
                 let processed = s.processed;
                 eprintln!(
-                    "PROGRESS {processed}/{total} (100.0%) ok={} error={} no_baseline={} elapsed={} — done",
-                    s.ok, s.errored, s.no_baseline, format_duration(run_start.elapsed()),
+                    "PROGRESS {processed}/{total} (100.0%) ok={} error={} failure={} no_baseline={} elapsed={} — done",
+                    s.ok, s.errored, s.failed, s.no_baseline, format_duration(run_start.elapsed()),
                 );
             }
             drop(upsert);
@@ -280,7 +297,9 @@ pub fn run(opts: &RunOpts) -> Result<RunSummary> {
                     ) {
                         Ok(row) => row,
                         Err(e) => {
-                            eprintln!("reconcile account {account_id} failed: {e:#}");
+                            // A DB/IO failure, not a per-account contract
+                            // divergence — `failure:`, same as an RPC error.
+                            eprintln!("FAILURE account={account_id} failure:{e:#}");
                             ReconRow {
                                 account_id,
                                 near_account_id: String::new(),
@@ -289,7 +308,7 @@ pub fn run(opts: &RunOpts) -> Result<RunSummary> {
                                 delta: "0".to_string(),
                                 rel_delta: 0.0,
                                 n_claims: 0,
-                                status: format!("error:{e}"),
+                                status: format!("failure:{e}"),
                             }
                         }
                     };

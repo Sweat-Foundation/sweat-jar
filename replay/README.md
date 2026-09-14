@@ -99,20 +99,22 @@ flat per account (~0.4s on FastNEAR). For a lot of accounts, replay CPU time
 rivals or exceeds the archival fetch — worth measuring on a sample before
 assuming the RPC is the only bottleneck.
 
-**Tracking a run in progress.** `run` prints two kinds of line to stderr as it
-goes — both visible in real time via `docker logs -f` if you're running it
+**Tracking a run in progress.** `run` prints three kinds of line to stderr as
+it goes — all visible in real time via `docker logs -f` if you're running it
 remotely (see `replay/docker/README.md`):
 
 - `ERROR account=<id> error:<msg>` — one line the moment any account's status
-  comes back `error:...` (a contract panic, an unreachable/throttled archival
-  RPC, …). This is the only live signal for errors; without it they're
-  invisible until the final summary or a CSV export.
-- `PROGRESS <done>/<total> (<pct>%) ok=<n> error=<n> no_baseline=<n>
+  comes back `error:...` (see "`error:` vs `failure:`" below).
+- `FAILURE account=<id> failure:<msg>` — same, for `failure:...` statuses.
+- `PROGRESS <done>/<total> (<pct>%) ok=<n> error=<n> failure=<n> no_baseline=<n>
   elapsed=<dur> rate=<n>/s eta=<dur>` — a heartbeat every 30s by default (set
   `REPLAY_PROGRESS_INTERVAL_SECS`, `0` to disable), plus one final line at
   100% when the run finishes. `<total>` is this invocation's worklist (already
   excludes anything `--force` didn't ask to redo), so a resumed run's
   percentage is progress on what's left, not on the full population.
+
+Without these lines, both statuses are invisible until the final summary or a
+CSV export.
 
 You can also just query the (already-written) `results` table directly from
 another terminal at any time — DuckDB allows concurrent readers alongside the
@@ -207,18 +209,32 @@ account_id,near_account_id,calculated_total_claim,actual_total_claim,delta,rel_d
 | `delta` | `calculated_total_claim − actual_total_claim` (signed) |
 | `rel_delta` | `delta / actual_total_claim` (`0.0` when actual is `0`) |
 | `n_claims` | number of claims replayed |
-| `status` | `ok` \| `no_baseline` \| `error:<msg>` |
+| `status` | `ok` \| `no_baseline` \| `error:<msg>` \| `failure:<msg>` |
 
 `status`: `ok` — replay succeeded from a real baseline; `no_baseline` — replay
 succeeded but the account held jars before `H` and no archival baseline was
-fetched (replayed from empty state; informational); `error:<msg>` — the engine or
-snapshot parse failed for this account (`calculated` is `0`, `delta` is
-`-actual`).
+fetched (replayed from empty state; informational). Both `error:<msg>` and
+`failure:<msg>` carry `calculated = 0`, `delta = -actual` — but they mean
+different things and call for different responses:
+
+- **`error:<msg>`** — the fetch succeeded, the engine ran, and the *contract
+  logic itself* panicked given this account's real history (e.g. "Timezone is
+  not set", "Account … is not found", "Not enough funds to restake"). **Not
+  retryable** — rerunning gives the same result every time. See "Known error
+  causes" below for what each one means and whether it's expected.
+- **`failure:<msg>`** — the tool never got a clean read on this account: the
+  archival RPC errored or was unreachable/throttled, or an unexpected panic
+  escaped the engine's own guard (a bug, not a modeled contract panic). **Worth
+  retrying.** `run`'s resumability skips any account already in `results`
+  regardless of status, so a `failure:` row needs an explicit retry —
+  `export-csv`, filter its `failure:` rows to an id list, then
+  `run --force --accounts <that file>` (after fixing connectivity or
+  getting/rotating an archival API key, if these are RPC errors).
 
 `run` prints a summary to stdout:
 
 ```
-processed <n> | ok <n> | error <n> | no_baseline <n> | over_tolerance <n>
+processed <n> | ok <n> | error <n> | failure <n> | no_baseline <n> | over_tolerance <n>
 sum_calculated <n> | sum_actual <n>
 ```
 
@@ -249,6 +265,46 @@ For each account:
 
 4. Sum the `claim` payload `items` for the on-chain total.
 
+`log_index` is authoritative intra-block order and always wins ties; a
+score-related/state-changing/claim rank only breaks a further tie between two
+different receipts that land in the same millisecond with the same
+`log_index` (rare — two distinct receipts, so `log_index` alone can't order
+them).
+
+## Known error causes
+
+Root-caused from real `error:`/`failure:` rows on production data:
+
+- **`Timestamp from future`** — would fire if a `record_score`/`apply_booster`
+  increment's own timestamp is after the event's block time, which happens in
+  a minority of the export's rows (an export artifact — the increment
+  timestamp disagreeing with its own `block_timestamp_utc`, since only
+  `SUCCESS_VALUE` receipts are ingested and the real call already passed this
+  same assertion on-chain). `timeline.rs` clamps each increment to
+  `min(increment_ts, block_ts)` before replay, so this is already handled and
+  doesn't surface as an error.
+- **`Account … is not found in smart contract`** — this account's very first
+  captured event (in `events/`) is a `claim`/`withdraw_all`/`restake`/
+  `record_score`, not a `deposit` — i.e. whatever created its jars isn't one
+  of the 7 event types this export tracks (most likely a deposits-airdrop, a
+  separate contract feature with no corresponding event in `interest_replay/`).
+  `deposit` already auto-creates the account (`get_or_create_account_mut`,
+  same as production), so this is **not fixable by "create on deposit"** —
+  there's no deposit event to trigger on. It's a gap in the source data for a
+  small number of accounts, confirmed against a live archival lookup (`null`
+  at block `H`, consistent with "genuinely fresh, but its real first action
+  isn't in our 7 event types").
+- **`Not enough funds to restake`** — the documented `RestakeAll` divergence
+  above: a multi-jar `from` set is replayed as `restake_all`, which sweeps
+  *every* currently-matured jar rather than just the two-or-more named in the
+  real event. If the replay's computed matured total (at that exact point in
+  its own timeline) is less than the on-chain `restaked` amount — most likely
+  right after an account's first-ever action, before any interest has
+  settled in the replay — the ask can exceed what's available. Rare (~0.1% of
+  accounts in samples); accepted, not fixed (would need modeling exactly
+  which jars a multi-jar restake actually touched, which isn't recoverable
+  from the event alone).
+
 ## `db` schema
 
 `replay/src/db/schema.rs`. Tables: `events` (`backend_account_id, ts_ms,
@@ -277,8 +333,9 @@ output — `backend_account_id` PK, the `reconciliation.csv` columns, plus
   effect).
 - `reconcile_user` wraps `run_timeline` in its own `catch_unwind`: the near-sdk
   unit-test mock can let a second panic on one worker thread escape the
-  engine's internal guard; the wrapper turns that account into an `error:` row
-  rather than killing the worker.
+  engine's internal guard; the wrapper turns that account into a `failure:`
+  row (a genuine bug, not a modeled contract panic — see "`error:` vs
+  `failure:`" above) rather than killing the worker.
 
 ## Testing
 

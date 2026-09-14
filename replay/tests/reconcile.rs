@@ -75,6 +75,50 @@ fn existed_at_start_account_confirmed_empty_by_an_authoritative_source_is_ok_not
     assert_eq!(row.status, "ok", "row: {row:?}");
 }
 
+/// Stands in for a real archival RPC failure (timeout, throttling, malformed
+/// response) — an infra problem, not a per-account contract divergence.
+struct AlwaysFails;
+
+impl SnapshotSource for AlwaysFails {
+    fn raw_account(&self, _account_id: i64, _near_account_id: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        anyhow::bail!("simulated RPC timeout")
+    }
+    fn is_authoritative(&self) -> bool {
+        true
+    }
+}
+
+#[test]
+fn snapshot_fetch_error_is_a_failure_not_an_error() {
+    let d = tempfile::tempdir().unwrap();
+    let dbp = build_fixture_db(d.path());
+    let c = db::open_read(&dbp).unwrap();
+
+    // A fetch that errors out never even reached this account's contract
+    // logic — that's a `failure:`, not an `error:` (see reconcile_user's doc:
+    // error: = the contract logic ran and panicked; failure: = we never got a
+    // clean read).
+    let row = reconcile_user(&c, 100, &products(), &AlwaysFails).unwrap();
+    assert!(row.status.starts_with("failure:"), "row: {row:?}");
+    assert!(!row.status.starts_with("error:"), "row: {row:?}");
+}
+
+#[test]
+fn contract_panic_is_an_error_not_a_failure() {
+    let d = tempfile::tempdir().unwrap();
+    let dbp = build_fixture_db(d.path());
+    let c = db::open_read(&dbp).unwrap();
+    let snap = DbSnapshotSource::new(&dbp);
+
+    // account 400: restakes from a jar this fixture never deposited into —
+    // the fetch succeeds cleanly, the engine runs, and the CONTRACT panics
+    // given this account's (synthetic) history. That's an `error:`, not a
+    // `failure:` — rerunning it changes nothing.
+    let row = reconcile_user(&c, 400, &products(), &snap).unwrap();
+    assert!(row.status.starts_with("error:"), "row: {row:?}");
+    assert!(!row.status.starts_with("failure:"), "row: {row:?}");
+}
+
 #[test]
 fn fresh_account_with_claim_reconciles_ok() {
     let d = tempfile::tempdir().unwrap();
