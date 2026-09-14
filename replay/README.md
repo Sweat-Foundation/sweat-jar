@@ -271,3 +271,10 @@ The single-account golden regression lives separately:
 ```sh
 cargo test -p sweat_jar --features replay-engine replay_account_history
 ```
+
+## Running on another machine
+
+For a long `--archival` run without tying up your own laptop: `replay/docker/`
+has a `Dockerfile`, an entrypoint that wraps the whole `build-db`-then-`run`
+pipeline behind environment variables, and a `run.sh` script to build and
+launch it. See `replay/docker/README.md`.

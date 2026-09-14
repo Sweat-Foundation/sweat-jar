@@ -1,0 +1,17 @@
+# Keep the replay/ Docker build context small. Docker builds from the repo
+# root (the workspace needs every member crate's source), so this list is
+# broader than just replay/'s own concerns.
+
+target/
+node_modules/
+test_data/
+res/
+res_test/
+res-integration/
+integration-tests/target/
+integration-test-ts/
+.git/
+.superpowers/
+mutants.out*
+*.duckdb
+reconciliation.csv
