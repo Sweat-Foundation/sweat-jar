@@ -333,6 +333,39 @@ one found so far):
   difference) — kept for state-fidelity (nonce, exact `cache.updated_at`
   match real chain, useful for future bisection work), not because it's
   confirmed to fix any claim-total divergence.
+
+  `AirdropWithBooster` also needed its own timezone fix: it originally only
+  tried `set_timezone_before_score_jar` (the feed's `account_timezones`
+  inference, `None` for some accounts), instead of the real `airdrop()`'s
+  `prepare_account_for_airdrop` step (`account.try_set_timezone(ticket.timezone)`,
+  the same hardcoded fallback a standalone `Deposit` already gets through
+  `deposit()`'s own call). Without it, an account with no feed timezone hit
+  `create_airdrop_deposit`'s `update_jar_cache` → `get_interest_calculation_term`,
+  which calls `account.timezone.adjust()` unconditionally (no validity
+  check) — panicking on the invalid default instead of picking up the
+  ticket's timezone the way a real receiver would.
+- **`rejected` `apply_booster` rows discarded (fixed — the single largest
+  divergence source found this session)** — `apply_booster()` unconditionally
+  calls `settle_interest()` *before* checking whether the booster mutation
+  itself will apply or get rejected; the export's `role` column reflects
+  only the latter. Filtering out `role = 'rejected'` rows (as the replay
+  used to) made that real `settle_interest` call — which rolls the 2-day
+  score window via `shift()`/`wipe()` — entirely invisible. Because
+  `shift()`/`wipe()` don't stamp `updated_at` in this build (intentionally
+  reproducing the pre-v4.2.3 bug), skipping a rejected booster's roll let a
+  *later* `record_score` see the same `days_since_last_update` gap and roll
+  the window a **second** time on the real chain while the replay only
+  rolled it once — leaving stale accumulated score the real chain had
+  already dropped. Found via the `bisect` debug tool (`replay/src/bin/bisect.rs`,
+  comparing the engine's intermediate state after each event against live
+  archival state at that event's block) on a real account whose `score.history`
+  diverged by orders of magnitude right after an untracked rejected booster.
+  `payload.rs` now parses `apply_booster` regardless of role; both roles
+  replay identically, letting the engine's own `apply_booster()` decide
+  applied/rejected from its own state while still reproducing the
+  `settle_interest` side effect either way. Impact: 392,261 rejected
+  `apply_booster` rows exist across the full export; on the 1000-account
+  sample this alone took `over_tolerance` from 43 to 7.
 - **`Timestamp from future`** — would fire if a `record_score`/`apply_booster`
   increment's own timestamp is after the event's block time, which happens in
   a minority of the export's rows (an export artifact — the increment
