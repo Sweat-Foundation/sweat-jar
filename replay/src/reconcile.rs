@@ -102,22 +102,32 @@ fn call_snapshot_safely(
 /// storage directly and emits no event at all) can create an account
 /// anywhere within the replay window, including well before an otherwise
 /// perfectly ordinary `Deposit` that would normally be trusted to be the
-/// account's genesis. Two cases, checked in order:
+/// account's genesis. Two cases, mutually exclusive by the first action's
+/// kind (never both attempted for the same account):
 ///
-/// 1. **Pre-existing state right before the first tracked event.** Query one
-///    block before it: if that comes back non-empty, the account already had
-///    jars nobody among our 7 event types ever created. Use that state as
-///    the baseline and replay the first tracked event normally on top of it
-///    (do NOT drop it — its own effect still needs replaying).
-/// 2. **Invisible creation at/after the first event's own block** — the
-///    already-shipped case: the first tracked event's own block height comes
-///    back non-empty (step 1 confirmed genuinely empty one block earlier),
-///    and the first action isn't a `Deposit` (the only action that
-///    auto-creates an account) — that combination means the invisible
-///    creation happened at or during this very event's own block. NEAR's
-///    view-at-height semantics return state as of right after that block's
-///    receipts ran, i.e. already post-event, so this leading event is
-///    dropped from the returned timeline before replaying the rest.
+/// 1. **First action is a `Deposit`: check the state one block before it.**
+///    `deposit()` (via `FtMessage::Stake`) completes within a single
+///    receipt — no lock, no promise/callback — so state one block earlier is
+///    genuinely a separate prior moment, never a mid-flight snapshot of the
+///    Deposit itself. If non-empty, the account already had jars nobody
+///    among our 7 event types created; use that state as the baseline and
+///    replay the Deposit normally on top of it (do NOT drop it).
+/// 2. **First action is anything else: the already-shipped post-event
+///    fetch.** Restake/Withdraw/WithdrawAll lock jars, send a
+///    withdrawal/transfer promise, and only emit their event from the
+///    *callback*, one or more blocks later — so "one block before the
+///    event's own block" can land mid-operation (e.g. jars still marked
+///    `is_pending_withdraw`), a transient snapshot of the very same action,
+///    not a separate prior state (confirmed by tracing a real account this
+///    way: `is_pending_withdraw: true` on the jars a Restake was about to
+///    consume, one block before its own log event). So for a non-`Deposit`
+///    first action we only ever check the event's own (post-execution)
+///    block height, on the theory that a non-Deposit first action itself
+///    proves the account already existed — the invisible creation must have
+///    happened at or before this event, and NEAR's view-at-height semantics
+///    return state as of right after this block's receipts ran, already
+///    reflecting it. This leading event is then dropped from the timeline
+///    before replaying the rest.
 ///
 /// Returns the (possibly updated) baseline, (possibly trimmed) timeline, and
 /// an `onchain_claimed` adjustment: when case 2 drops a leading `Claim`, its
@@ -137,22 +147,21 @@ pub fn apply_block_height_fallback(
     let Some(block_height) = slice.first_event_block_height else {
         return (raw_account, timeline, 0);
     };
-
-    // Case 1: state one block before the first tracked event.
-    if let Some(bytes) =
-        call_snapshot_safely(snapshot, &slice.near_account_id, block_height.saturating_sub(1))
-    {
-        return (Some(bytes), timeline, 0);
-    }
-
-    // Case 2: pre-event state confirmed empty; only a non-Deposit first
-    // action still needs the post-event re-fetch (a Deposit-first, genuinely
-    // fresh account is already correctly handled by `get_or_create_account_mut`).
     let first_is_deposit =
         matches!(timeline.events.first(), Some(e) if matches!(e.action, Action::Deposit { .. }));
+
+    // Case 1: Deposit is single-receipt/atomic, so the block right before it
+    // is always safe to check.
     if first_is_deposit {
-        return (raw_account, timeline, 0);
+        return match call_snapshot_safely(snapshot, &slice.near_account_id, block_height.saturating_sub(1)) {
+            Some(bytes) => (Some(bytes), timeline, 0),
+            None => (raw_account, timeline, 0),
+        };
     }
+
+    // Case 2: any other first action may be a multi-receipt operation (lock
+    // + promise + callback) — only the event's own (post-execution) block is
+    // ever safe to check.
     match call_snapshot_safely(snapshot, &slice.near_account_id, block_height) {
         Some(bytes) => {
             let dropped = timeline.events.remove(0);

@@ -236,6 +236,69 @@ fn deposit_first_account_with_invisible_pre_existing_state_recovers_via_block_he
     assert_eq!(claimed_adjustment, 0);
 }
 
+/// Answers `raw_account_at` for BOTH the pre-event and the post-event block
+/// height, with different content — the fixture's stand-in for a multi-receipt
+/// operation (lock jars, promise, callback emits the event) whose pre-event
+/// block can show a transient mid-flight snapshot of that very same
+/// operation, not a genuinely separate prior state.
+struct BothHeightsAnswered {
+    pre_event_block_height: u64,
+    pre_event_state_json: &'static str,
+    post_event_block_height: u64,
+    post_event_state_json: &'static str,
+}
+
+impl SnapshotSource for BothHeightsAnswered {
+    fn raw_account(&self, _account_id: i64, _near_account_id: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    fn is_authoritative(&self) -> bool {
+        true
+    }
+    fn raw_account_at(&self, _near_account_id: &str, block_height: u64) -> anyhow::Result<Option<Vec<u8>>> {
+        if block_height == self.pre_event_block_height {
+            Ok(Some(account_state_json_to_raw(self.pre_event_state_json)?))
+        } else if block_height == self.post_event_block_height {
+            Ok(Some(account_state_json_to_raw(self.post_event_state_json)?))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+#[test]
+fn non_deposit_first_action_never_checks_the_pre_event_block() {
+    // account 500: first tracked event is a multi-jar `restake` (not a
+    // `Deposit`) at block_height 190000800 — a multi-receipt operation on
+    // the real chain (lock jars, withdrawal promise, callback emits the
+    // event). If the fallback checked the pre-event block for a non-Deposit
+    // first action, it could pick up a transient locked snapshot of that
+    // very same restake instead of a genuinely separate prior state
+    // (verified against a real production account: `is_pending_withdraw:
+    // true` on the jars the restake was about to consume, one block before
+    // its own log event) — silently corrupting the baseline. Both heights
+    // answer here with different, distinguishable content; only the
+    // post-event one must ever be used.
+    let d = tempfile::tempdir().unwrap();
+    let dbp = build_fixture_db(d.path());
+    let c = db::open_read(&dbp).unwrap();
+
+    let snap = BothHeightsAnswered {
+        pre_event_block_height: 190_000_799,
+        pre_event_state_json: r#"{"nonce":0,"jars":{"365d_12apy":{"deposits":[["1774000000000","1"]],"cache":null,"is_pending_withdraw":true,"claim_remainder":"0"},"90d_3apy":{"deposits":[["1774000000000","1"]],"cache":null,"is_pending_withdraw":true,"claim_remainder":"0"}},"score":{"updated_at":1774000000000,"history":[]},"is_penalty_applied":false,"features":{},"timezone":0}"#,
+        post_event_block_height: 190_000_800,
+        post_event_state_json: r#"{"nonce":1,"jars":{"365d_12apy":{"deposits":[["1774000000000","9"]],"cache":null,"is_pending_withdraw":false,"claim_remainder":"0"}},"score":{"updated_at":1774000000000,"history":[]},"is_penalty_applied":false,"features":{},"timezone":0}"#,
+    };
+
+    let row = reconcile_user(&c, 500, &products(), &snap).unwrap();
+    // If the pre-event (locked, mid-flight) snapshot had been used as the
+    // baseline AND the restake replayed on top of it, this would panic as
+    // "error: Not enough funds to restake" (reproduced against the real
+    // account this scenario is modeled on). Landing on "ok" proves only the
+    // post-event height was ever consulted.
+    assert_eq!(row.status, "ok", "row: {row:?}");
+}
+
 #[test]
 fn fresh_account_with_claim_reconciles_ok() {
     let d = tempfile::tempdir().unwrap();
