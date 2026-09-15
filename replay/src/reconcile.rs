@@ -98,11 +98,14 @@ fn call_snapshot_safely(
 /// How many blocks `apply_block_height_fallback` walks backward from the
 /// first tracked event looking for a genuinely resolved (unlocked) prior
 /// state, before giving up and falling back to the post-event fetch. Real
-/// cross-contract callbacks on NEAR resolve within a handful of blocks;
-/// this just bounds the worst case (a pathological or never-resolved lock)
-/// to a fixed number of extra RPC calls, made only for the rare accounts
-/// this fallback applies to at all.
-const MAX_LOCK_WALKBACK_BLOCKS: u64 = 20;
+/// cross-contract callbacks on NEAR resolve within a handful of blocks —
+/// verified against a real production account, which resolved at offset 3 —
+/// so 6 is already a 2x safety margin, not a tight fit. Keep this small: a
+/// 1000-account sample with the cap at 20 pushed enough concurrent archival
+/// traffic (worst case 20 extra calls × 8 threads for every account this
+/// fallback applies to) to trigger a throttling cascade that also failed
+/// unrelated accounts' unrelated calls, not just the walk-back's own.
+const MAX_LOCK_WALKBACK_BLOCKS: u64 = 6;
 
 /// Confirmed-empty at block H (an authoritative source said so) — but that
 /// doesn't mean the account was still empty right before its first *tracked*
