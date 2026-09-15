@@ -50,6 +50,66 @@ pub struct MigrationRecord {
     pub raw_account: Option<Vec<u8>>,
 }
 
+/// Merges an adjacent `Deposit` + `ApplyBooster` pair sharing the same
+/// on-chain block into a single `Action::AirdropWithBooster`.
+///
+/// The `airdrop()` contract call handles a receiver in one internal sequence
+/// — `settle_interest_before_booster` (runs BEFORE the jar exists) ->
+/// `create_airdrop_deposit` -> `apply_airdrop_booster` — then emits a
+/// `Deposit` event per receiver and one batched `ApplyBooster` event after
+/// the whole receiver loop. Replaying these as two independent top-level API
+/// calls (`Action::Deposit` then `Action::ApplyBooster`) is wrong: the
+/// public `apply_booster()` API re-runs `settle_interest` itself, and by
+/// then the jar the standalone `Deposit` just created already exists — so it
+/// gets wrongly re-cached to `start_of_the_day`, something that never
+/// happened on the real chain (confirmed against a real account's archival
+/// state and the `interest_replay_receipt_order_cohort` export's
+/// `is_deposit_with_booster` flag, which is ~1:1 with this exact
+/// same-block-Deposit-and-ApplyBooster pattern in the tracked events).
+///
+/// Detected purely from this account's own events — no extra data source
+/// needed: a `Deposit` and an `ApplyBooster` sharing one on-chain block ID.
+/// `block_heights` is keyed by the pre-merge `(ts_ms, seq)`, so the merged
+/// event keeps one of the two original `seq` values (the smaller) as its
+/// identity — `first_event_block_height`'s lookup (by that same key) still
+/// resolves correctly if this merged event turns out to be the timeline's
+/// first.
+fn merge_airdrop_boosters(events: Vec<Event>, block_heights: &std::collections::HashMap<(u64, u64), u64>) -> Vec<Event> {
+    let mut merged = Vec::with_capacity(events.len());
+    let mut i = 0;
+    while i < events.len() {
+        if i + 1 < events.len() {
+            let a = &events[i];
+            let b = &events[i + 1];
+            let same_block = a.ts_ms == b.ts_ms
+                && block_heights.get(&(a.ts_ms, a.seq)) == block_heights.get(&(b.ts_ms, b.seq));
+            let combo = if same_block {
+                match (&a.action, &b.action) {
+                    (Action::Deposit { product_id, amount }, Action::ApplyBooster { score, timestamp_ms })
+                    | (Action::ApplyBooster { score, timestamp_ms }, Action::Deposit { product_id, amount }) => {
+                        Some((product_id.clone(), *amount, *score, *timestamp_ms))
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            if let Some((product_id, amount, score, timestamp_ms)) = combo {
+                merged.push(Event {
+                    ts_ms: a.ts_ms,
+                    seq: a.seq.min(b.seq),
+                    action: Action::AirdropWithBooster { product_id, amount, score, timestamp_ms },
+                });
+                i += 2;
+                continue;
+            }
+        }
+        merged.push(events[i].clone());
+        i += 1;
+    }
+    merged
+}
+
 /// Reads every event row for `backend_account_id` and builds a sorted engine
 /// [`Timeline`]. An account with no replayable events yields an empty timeline;
 /// an account absent from the `accounts` table is an error.
@@ -144,11 +204,11 @@ pub fn load_user(conn: &Connection, backend_account_id: i64) -> Result<(UserSlic
                 }
             }
             ParsedEvent::SetIncreasedScoreCap(v) => Action::SetIncreasedScoreCap(v),
-            ParsedEvent::Claim { total } => {
+            ParsedEvent::Claim { total, timestamp_ms } => {
                 onchain_claimed =
                     onchain_claimed.checked_add(total).context("onchain_claimed overflow")?;
                 claim_amounts.insert((ts_ms, log_index), total);
-                Action::Claim
+                Action::Claim { timestamp_ms }
             }
         };
         events.push(Event { ts_ms, seq: log_index, action });
@@ -156,6 +216,7 @@ pub fn load_user(conn: &Connection, backend_account_id: i64) -> Result<(UserSlic
     }
 
     let timeline = Timeline { events }.sorted();
+    let timeline = Timeline { events: merge_airdrop_boosters(timeline.events, &block_heights) };
     let first_key = timeline.events.first().map(|first| (first.ts_ms, first.seq));
     let first_event_block_height = first_key.and_then(|k| block_heights.get(&k).copied());
     let first_event_claim_amount = first_key.and_then(|k| claim_amounts.get(&k).copied());

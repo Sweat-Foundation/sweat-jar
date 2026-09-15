@@ -67,14 +67,22 @@ impl Contract {
         }
     }
 
+    /// `pub(crate)`, not just `fn`: the replay engine (`replay/src/replay/engine.rs`,
+    /// same crate, wasm-excluded) calls this and its two siblings below directly to
+    /// reproduce `airdrop`'s exact internal order — `settle_interest` runs BEFORE
+    /// the jar exists here, unlike a standalone `deposit()` + `apply_booster()`
+    /// pair, where `apply_booster`'s own `settle_interest` call would run AFTER
+    /// the jar already exists and wrongly re-cache it. See
+    /// `replay/README.md`'s "Known error causes" for the on-chain divergence this
+    /// visibility bump exists to let the replay avoid.
     #[mutants::skip]
-    fn settle_interest_before_booster(&mut self, account_id: &AccountId, booster: Score) {
+    pub(crate) fn settle_interest_before_booster(&mut self, account_id: &AccountId, booster: Score) {
         if booster > 0 {
             self.settle_interest(account_id);
         }
     }
 
-    fn create_airdrop_deposit(
+    pub(crate) fn create_airdrop_deposit(
         &mut self,
         account_id: &AccountId,
         ticket: &DepositTicket,
@@ -87,7 +95,7 @@ impl Contract {
         account.update_jar_cache(product, now);
     }
 
-    fn apply_airdrop_booster(
+    pub(crate) fn apply_airdrop_booster(
         &mut self,
         account_id: &AccountId,
         booster: Score,

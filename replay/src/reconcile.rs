@@ -208,7 +208,7 @@ pub fn apply_block_height_fallback(
     match call_snapshot_safely(snapshot, &slice.near_account_id, block_height) {
         Some(bytes) => {
             let dropped = timeline.events.remove(0);
-            let claimed_adjustment = if matches!(dropped.action, Action::Claim) {
+            let claimed_adjustment = if matches!(dropped.action, Action::Claim { .. }) {
                 slice.first_event_claim_amount.unwrap_or(0)
             } else {
                 0

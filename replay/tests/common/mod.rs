@@ -20,6 +20,8 @@ pub fn write_fixture_dataset(dir: &Path) -> PathBuf {
     // 600: fresh per the export, but its first event is a claim, not a
     //      deposit — stands in for an FT-transfer migration (writes storage
     //      directly, emits no event) that the block-H baseline can't see.
+    // 700: fresh, a deposit + apply_booster sharing one block_height — the
+    //      `airdrop()` deposit-with-booster shape (see `merge_airdrop_boosters`).
     conn.execute_batch(&format!(
         r#"
         COPY (SELECT
@@ -33,7 +35,8 @@ pub fn write_fixture_dataset(dir: &Path) -> PathBuf {
                 (300, 'near300', false, true),
                 (400, 'near400', false, true),
                 (500, 'near500', false, true),
-                (600, 'near600', false, true)
+                (600, 'near600', false, true),
+                (700, 'near700', false, true)
             ) t(col0, col1, col2, col3))
         TO '{d}/accounts/a.parquet' (FORMAT parquet);
 
@@ -48,7 +51,8 @@ pub fn write_fixture_dataset(dir: &Path) -> PathBuf {
                 (300, 'near300', NULL::BIGINT,       'none'),
                 (400, 'near400', NULL::BIGINT,       'none'),
                 (500, 'near500', NULL::BIGINT,       'none'),
-                (600, 'near600', NULL::BIGINT,       'none')
+                (600, 'near600', NULL::BIGINT,       'none'),
+                (700, 'near700', 0::BIGINT,          'user')
             ) t(col0, col1, col2, col3))
         TO '{d}/account_timezones/tz.parquet' (FORMAT parquet);
         "#,
@@ -89,7 +93,12 @@ pub fn write_fixture_dataset(dir: &Path) -> PathBuf {
                 -- 600: first event is a claim (no preceding deposit anywhere in
                 -- the export) at block 190000900 — the fallback-fetch scenario.
                 (600, TIMESTAMP '2026-03-22 00:00:00', 0, 'claim',          NULL::VARCHAR,      '["h",{{"items":[["365d_12apy","5"]],"timestamp":1774483200000}}]', 190000900),
-                (600, TIMESTAMP '2026-03-29 00:00:00', 0, 'withdraw_all',   NULL::VARCHAR,      '["h",[["365d_12apy","0","10"]]]', 190001000)
+                (600, TIMESTAMP '2026-03-29 00:00:00', 0, 'withdraw_all',   NULL::VARCHAR,      '["h",[["365d_12apy","0","10"]]]', 190001000),
+                -- 700: deposit (log_index 0) + apply_booster (log_index 1) sharing
+                -- the SAME ts_ms and block_height — the airdrop()-with-booster shape.
+                (700, TIMESTAMP '2026-03-21 00:00:00', 0, 'deposit',        NULL::VARCHAR,      '["h",["steps_365d_20000_10000_tiered_v1","1000000000000000000000"]]', 190001100),
+                (700, TIMESTAMP '2026-03-21 00:00:00', 1, 'apply_booster',  'applied'::VARCHAR, '{{"timestamp":"1774051200000","score":"3000"}}', 190001100),
+                (700, TIMESTAMP '2026-03-25 00:00:00', 0, 'claim',          NULL::VARCHAR,      '["h",{{"items":[["steps_365d_20000_10000_tiered_v1","456"]],"timestamp":1774396800000}}]', 190001200)
             ) t(col0,col1,col2,col3,col4,col5,col6))
         TO '{d}/events/e.parquet' (FORMAT parquet);
         "#,

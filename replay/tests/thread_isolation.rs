@@ -53,6 +53,6 @@ fn one_and_three_threads_produce_the_same_rows() {
     // observing the (trivially-identical) resumed no-op export.
     let rows_3 = run_with(&dbp, &d.path().join("t3.csv"), 3, true);
 
-    assert_eq!(rows_1.len(), 6, "expected one row per fixture account");
+    assert_eq!(rows_1.len(), 7, "expected one row per fixture account");
     assert_eq!(rows_1, rows_3);
 }

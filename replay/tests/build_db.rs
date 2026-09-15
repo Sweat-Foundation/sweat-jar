@@ -18,7 +18,7 @@ fn events_are_success_only_and_sorted() {
     let d = tempfile::tempdir().unwrap();
     let conn = built(d.path());
     let n: i64 = conn.query_row("SELECT count(*) FROM events", [], |r| r.get(0)).unwrap();
-    assert_eq!(n, 13); // all fixture rows are SUCCESS_VALUE
+    assert_eq!(n, 16); // all fixture rows are SUCCESS_VALUE
     let ordered: bool = conn
         .query_row(
             "SELECT bool_and(ok) FROM (SELECT (backend_account_id, ts_ms, log_index) >= \

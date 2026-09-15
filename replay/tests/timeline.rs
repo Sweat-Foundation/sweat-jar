@@ -34,7 +34,7 @@ fn account_200_maps_all_event_kinds() {
             Action::Deposit { .. } => "deposit",
             Action::RecordScore(_) => "score",
             Action::ApplyBooster { .. } => "booster",
-            Action::Claim => "claim",
+            Action::Claim { .. } => "claim",
             _ => "other",
         })
         .collect();
@@ -115,6 +115,29 @@ fn future_increment_timestamps_are_clamped_to_block_time() {
         .expect("apply_booster action");
     assert!(matches!(booster.action, Action::ApplyBooster { score: 3000, timestamp_ms }
         if timestamp_ms == booster.ts_ms));
+}
+
+#[test]
+fn deposit_and_apply_booster_sharing_a_block_merge_into_airdrop_with_booster() {
+    let d = tempfile::tempdir().unwrap();
+    let c = conn(d.path());
+    let (_slice, tl) = load_user(&c, 700).unwrap();
+
+    // Deposit (log_index 0) and apply_booster (log_index 1) shared one
+    // block_height in the fixture — they must merge into a single action,
+    // not replay as two independent events. Only the trailing claim remains
+    // separate.
+    assert_eq!(tl.events.len(), 2, "expected [AirdropWithBooster, Claim], got {:?}", tl.events);
+    assert!(
+        matches!(
+            tl.events[0].action,
+            Action::AirdropWithBooster { ref product_id, amount: 1_000_000_000_000_000_000_000, score: 3000, .. }
+            if product_id == "steps_365d_20000_10000_tiered_v1"
+        ),
+        "expected AirdropWithBooster at index 0, got {:?}",
+        tl.events[0].action
+    );
+    assert!(matches!(tl.events[1].action, Action::Claim { .. }));
 }
 
 #[test]

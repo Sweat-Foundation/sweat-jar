@@ -164,7 +164,10 @@ mod scenario {
             }
 
             let action = match kind {
-                "claim" => engine::Action::Claim,
+                // This path's `interactions.csv` has no per-claim payload
+                // timestamp (only second-precision `utc_time`) — use the
+                // event's own `ts` as the best available approximation.
+                "claim" => engine::Action::Claim { timestamp_ms: ts },
                 "deposit" => engine::Action::Deposit {
                     product_id: product_id.to_string(),
                     amount: parse_sweat_to_yocto(amount),

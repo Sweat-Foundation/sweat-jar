@@ -43,13 +43,36 @@ pub enum Action {
     /// rest of the matured principal is withdrawn.
     Restake { from: String, into: String, amount: u128 },
     SetIncreasedScoreCap(bool),
-    Claim,
+    /// `claim_total()` — `timestamp_ms` is the mock block time to run it at.
+    /// `claim_total` uses `env::block_timestamp_ms()` as `now` for every
+    /// jar's interest calculation AND embeds that exact same value into the
+    /// emitted `claim` event's own `timestamp` field — so that field is a
+    /// precise, ground-truth record of what the real contract used, more
+    /// accurate than the export's block-level `block_timestamp_utc` (which
+    /// can lag the real per-receipt execution instant by ~1s on average,
+    /// occasionally by tens of seconds — the same class of export artifact
+    /// already documented for `record_score`/`apply_booster`, but for claims
+    /// this previously went uncorrected because the payload's timestamp
+    /// field was parsed and then discarded). See
+    /// `replay/README.md`'s "Known error causes".
+    Claim { timestamp_ms: u64 },
     /// `apply_booster([account], score, UTC(timestamp_ms))` — the oracle booster path.
     ApplyBooster { score: Score, timestamp_ms: u64 },
     /// `withdraw_all(Some(product_ids))` — matured balance of the named jars.
     WithdrawAll { product_ids: Vec<String> },
     /// `restake_all(ticket(into=product_id), None, Some(amount))`.
     RestakeAll { product_id: String, amount: u128 },
+    /// A single `airdrop()` receiver step, replayed with the SAME internal
+    /// order the real contract uses (`settle_interest_before_booster` ->
+    /// `create_airdrop_deposit` -> `apply_airdrop_booster`) — critically,
+    /// `settle_interest` runs BEFORE the jar is created here. A standalone
+    /// `Deposit` followed by a standalone `ApplyBooster` (whose own
+    /// `apply_booster()` call internally re-triggers `settle_interest`) would
+    /// instead settle interest AFTER the jar already exists, wrongly
+    /// re-caching a jar that didn't exist yet on the real chain at that
+    /// point. The caller (`replay/src/timeline.rs`) detects this pattern as
+    /// a `deposit` and `apply_booster` event sharing one on-chain block.
+    AirdropWithBooster { product_id: String, amount: u128, score: Score, timestamp_ms: u64 },
 }
 
 impl Action {
@@ -68,8 +91,9 @@ impl Action {
             | Action::Restake { .. }
             | Action::SetIncreasedScoreCap(_)
             | Action::WithdrawAll { .. }
-            | Action::RestakeAll { .. } => 1,
-            Action::Claim => 2,
+            | Action::RestakeAll { .. }
+            | Action::AirdropWithBooster { .. } => 1,
+            Action::Claim { .. } => 2,
         }
     }
 }
@@ -138,6 +162,29 @@ pub struct ReplayOutcome {
 /// product's jar — the contract has no partial-amount withdraw — so historical
 /// partial withdrawals are a known divergence.
 pub fn run_timeline(baseline: Baseline, products: &[Product], window_start_ms: u64, timeline: Timeline) -> ReplayOutcome {
+    run_timeline_traced(baseline, products, window_start_ms, timeline, |_, _| {})
+}
+
+/// Same as [`run_timeline`], but calls `on_step(index, account_view)` after
+/// every processed event — `index` is 0-based into the (already sorted)
+/// `timeline.events`, `account_view` the account's full state right after
+/// that event executed. For bisecting a divergence against real archival
+/// state: capture the view at each event, then compare each one to
+/// `get_account` at that event's own on-chain block height (NEAR's
+/// view-at-height semantics mean that block already reflects the event) to
+/// find exactly where the two histories first disagree.
+///
+/// `run_timeline` is just this with a no-op callback — the callback costs
+/// nothing on the hot path (no allocation, no view construction) when it
+/// does nothing with its argument, so there's no reason to keep two
+/// separate implementations of the event loop in sync.
+pub fn run_timeline_traced(
+    baseline: Baseline,
+    products: &[Product],
+    window_start_ms: u64,
+    timeline: Timeline,
+    mut on_step: impl FnMut(usize, sweat_jar_model::data::account::view::AccountView),
+) -> ReplayOutcome {
     test_env_ext::set_test_log_events(false);
 
     let account_id = baseline.account_id.clone();
@@ -158,7 +205,7 @@ pub fn run_timeline(baseline: Baseline, products: &[Product], window_start_ms: u
         // overrides on-chain state.
         let mut timezone_applied = false;
 
-        for event in timeline.events {
+        for (index, event) in timeline.events.into_iter().enumerate() {
             context.set_block_timestamp_in_ms(event.ts_ms);
             match event.action {
                 Action::RecordScore(increments) => {
@@ -217,11 +264,21 @@ pub fn run_timeline(baseline: Baseline, products: &[Product], window_start_ms: u
                         .contract()
                         .set_feature_enabled(account_id.clone(), Feature::IncreasedScoreCap, enabled);
                 }
-                Action::Claim => {
+                Action::Claim { timestamp_ms } => {
                     context.switch_account(&account_id);
+                    // Use the claim's own embedded execution timestamp
+                    // (ground truth — it's exactly what the real
+                    // `claim_total()` call used for `now`, and what it
+                    // embedded into the emitted event) instead of the outer
+                    // block-level `ts_ms`, which can lag the real per-receipt
+                    // execution instant.
+                    context.set_block_timestamp_in_ms(timestamp_ms);
                     if let PromiseOrValue::Value(claimed) = context.contract().claim_total(None) {
                         let amount = claimed.get_total().0;
                         total_claimed += amount;
+                        // Reported/keyed by the event's own `ts_ms` (matching
+                        // how the caller looks up the on-chain claim total for
+                        // this same event), not `timestamp_ms`.
                         per_claim.push((event.ts_ms, amount));
                     }
                 }
@@ -253,6 +310,44 @@ pub fn run_timeline(baseline: Baseline, products: &[Product], window_start_ms: u
                     };
                     let _ = context.contract().restake_all(ticket, None, Some(amount.into()));
                 }
+                Action::AirdropWithBooster { product_id, amount, score, timestamp_ms } => {
+                    set_timezone_before_score_jar(
+                        &mut context,
+                        &account_id,
+                        baseline.timezone_ms,
+                        products,
+                        &product_id,
+                        &mut timezone_applied,
+                    );
+                    context.switch_account_to_operator();
+                    // Mirrors `airdrop()`'s exact per-receiver order — see the
+                    // `Action::AirdropWithBooster` doc comment. `settle_interest`
+                    // MUST run before the jar exists (`settle_interest_before_booster`),
+                    // then the deposit creates it, then the booster is applied
+                    // WITHOUT going through the public `apply_booster()` API
+                    // (which would re-run `settle_interest` a second time, now
+                    // seeing the jar that just got created — the exact bug this
+                    // action exists to avoid).
+                    let ticket = DepositTicket {
+                        product_id: product_id.clone(),
+                        valid_until: 0.into(),
+                        timezone: Some(Timezone::hour_shift(0)),
+                    };
+                    context.contract().settle_interest_before_booster(&account_id, score);
+                    let product = context.contract().get_product(&product_id);
+                    context.contract().create_airdrop_deposit(&account_id, &ticket, amount, &product, event.ts_ms);
+                    let (mut applied, mut rejected) = (Vec::new(), Vec::new());
+                    context.contract().apply_airdrop_booster(
+                        &account_id,
+                        score,
+                        Some(UTC(timestamp_ms)),
+                        &mut applied,
+                        &mut rejected,
+                    );
+                }
+            }
+            if let Some(view) = AccountApi::get_account(&*context.contract(), account_id.clone()) {
+                on_step(index, view);
             }
         }
         (total_claimed, per_claim)

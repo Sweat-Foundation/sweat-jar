@@ -70,7 +70,7 @@ pub fn explain(opts: &ExplainOpts) -> Result<()> {
     let mut onchain: BTreeMap<u64, u128> = BTreeMap::new();
     for row in rows {
         let (ts, payload) = row?;
-        if let Some(crate::payload::ParsedEvent::Claim { total }) =
+        if let Some(crate::payload::ParsedEvent::Claim { total, .. }) =
             crate::payload::parse_event("claim", None, &payload)?
         {
             *onchain.entry(ts).or_default() += total;

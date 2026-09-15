@@ -14,7 +14,14 @@ pub enum ParsedEvent {
     WithdrawAll { product_ids: Vec<String> },
     Restake { into: String, from: Vec<String>, restaked: u128 },
     SetIncreasedScoreCap(bool),
-    Claim { total: u128 },
+    /// `timestamp_ms` is the claim's own embedded execution instant
+    /// (`ClaimData.timestamp`, the exact `env::block_timestamp_ms()` the
+    /// real `claim_total()` call used for `now`) — more precise than the
+    /// event row's own `block_timestamp_utc`/`ts_ms`, which can lag it by
+    /// roughly a second on average (occasionally much more), per the same
+    /// export-artifact class already documented for `record_score`/
+    /// `apply_booster`.
+    Claim { total: u128, timestamp_ms: u64 },
 }
 
 /// `role` is the event row's `role` column (only meaningful for `apply_booster`).
@@ -88,7 +95,8 @@ pub fn parse_event(event: &str, role: Option<&str>, payload: &str) -> Result<Opt
                     .checked_add(yocto_str_to_u128(it[1].as_str().context("claim item amount")?)?)
                     .context("claim total overflow")?;
             }
-            Ok(Some(ParsedEvent::Claim { total }))
+            let timestamp_ms = str_num_u64(&v[1]["timestamp"]).context("claim timestamp")?;
+            Ok(Some(ParsedEvent::Claim { total, timestamp_ms }))
         }
         other => bail!("unknown event type {other:?}"),
     }
@@ -186,7 +194,7 @@ mod tests {
     fn claim_items_sum() {
         let p = parse_event("claim", None,
             r#"["hash",{"items":[["p1","10"],["p2","5"]],"timestamp":1}]"#).unwrap().unwrap();
-        assert!(matches!(p, ParsedEvent::Claim { total: 15 }));
+        assert!(matches!(p, ParsedEvent::Claim { total: 15, timestamp_ms: 1 }));
     }
 
     #[test]
