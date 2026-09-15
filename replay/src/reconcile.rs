@@ -76,22 +76,55 @@ fn zero_calc_row(slice: &UserSlice, status: impl Into<String>) -> ReconRow {
     }
 }
 
-/// Confirmed-empty at block H (an authoritative source said so) but the
-/// first action isn't a `Deposit` (the only action that auto-creates an
-/// account) means something invisible to the tracked event types created
-/// this account before H — e.g. an FT-transfer migration that writes storage
-/// directly and emits no event. Re-fetch state at that first event's own
-/// block height: NEAR's view-at-height semantics return state as of right
-/// after that block's receipts ran, i.e. post-event, so the event itself is
-/// dropped from the returned timeline before replaying the rest.
+/// Best-effort `raw_account_at`: a fetch failure or panic is treated as
+/// "didn't find anything" rather than propagated — this fallback is always
+/// optional, layered on top of an already-established `raw_account`/`no_baseline`
+/// path.
+fn call_snapshot_safely(
+    snapshot: &dyn SnapshotSource,
+    near_account_id: &str,
+    block_height: u64,
+) -> Option<Vec<u8>> {
+    let result: std::thread::Result<Result<Option<Vec<u8>>>> =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            snapshot.raw_account_at(near_account_id, block_height)
+        }));
+    match result {
+        Ok(Ok(v)) => v,
+        _ => None,
+    }
+}
+
+/// Confirmed-empty at block H (an authoritative source said so) — but that
+/// doesn't mean the account was still empty right before its first *tracked*
+/// event. Something invisible to the 7 tracked event types (most commonly an
+/// `FtMessage::Migrate` from a previous contract version, which writes
+/// storage directly and emits no event at all) can create an account
+/// anywhere within the replay window, including well before an otherwise
+/// perfectly ordinary `Deposit` that would normally be trusted to be the
+/// account's genesis. Two cases, checked in order:
+///
+/// 1. **Pre-existing state right before the first tracked event.** Query one
+///    block before it: if that comes back non-empty, the account already had
+///    jars nobody among our 7 event types ever created. Use that state as
+///    the baseline and replay the first tracked event normally on top of it
+///    (do NOT drop it — its own effect still needs replaying).
+/// 2. **Invisible creation at/after the first event's own block** — the
+///    already-shipped case: the first tracked event's own block height comes
+///    back non-empty (step 1 confirmed genuinely empty one block earlier),
+///    and the first action isn't a `Deposit` (the only action that
+///    auto-creates an account) — that combination means the invisible
+///    creation happened at or during this very event's own block. NEAR's
+///    view-at-height semantics return state as of right after that block's
+///    receipts ran, i.e. already post-event, so this leading event is
+///    dropped from the returned timeline before replaying the rest.
 ///
 /// Returns the (possibly updated) baseline, (possibly trimmed) timeline, and
-/// an `onchain_claimed` adjustment: when the dropped leading event was itself
-/// a `Claim`, its on-chain amount must come out of the account's total too —
-/// otherwise it counts on the on-chain side but was never replayed on the
-/// calculated side, producing a spurious divergence rather than a fixed
-/// reconciliation. All three are unchanged when the fallback doesn't apply or
-/// doesn't find anything.
+/// an `onchain_claimed` adjustment: when case 2 drops a leading `Claim`, its
+/// on-chain amount must come out of the account's total too — otherwise it
+/// counts on the on-chain side but was never replayed on the calculated
+/// side, producing a spurious divergence rather than a fixed reconciliation.
+/// All three are unchanged when neither case applies.
 pub fn apply_block_height_fallback(
     snapshot: &dyn SnapshotSource,
     slice: &UserSlice,
@@ -101,20 +134,27 @@ pub fn apply_block_height_fallback(
     if raw_account.is_some() || !snapshot.is_authoritative() {
         return (raw_account, timeline, 0);
     }
+    let Some(block_height) = slice.first_event_block_height else {
+        return (raw_account, timeline, 0);
+    };
+
+    // Case 1: state one block before the first tracked event.
+    if let Some(bytes) =
+        call_snapshot_safely(snapshot, &slice.near_account_id, block_height.saturating_sub(1))
+    {
+        return (Some(bytes), timeline, 0);
+    }
+
+    // Case 2: pre-event state confirmed empty; only a non-Deposit first
+    // action still needs the post-event re-fetch (a Deposit-first, genuinely
+    // fresh account is already correctly handled by `get_or_create_account_mut`).
     let first_is_deposit =
         matches!(timeline.events.first(), Some(e) if matches!(e.action, Action::Deposit { .. }));
     if first_is_deposit {
         return (raw_account, timeline, 0);
     }
-    let Some(block_height) = slice.first_event_block_height else {
-        return (raw_account, timeline, 0);
-    };
-    let fallback: std::thread::Result<Result<Option<Vec<u8>>>> =
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            snapshot.raw_account_at(&slice.near_account_id, block_height)
-        }));
-    match fallback {
-        Ok(Ok(Some(bytes))) => {
+    match call_snapshot_safely(snapshot, &slice.near_account_id, block_height) {
+        Some(bytes) => {
             let dropped = timeline.events.remove(0);
             let claimed_adjustment = if matches!(dropped.action, Action::Claim) {
                 slice.first_event_claim_amount.unwrap_or(0)
@@ -123,7 +163,7 @@ pub fn apply_block_height_fallback(
             };
             (Some(bytes), timeline, claimed_adjustment)
         }
-        _ => (raw_account, timeline, 0),
+        None => (raw_account, timeline, 0),
     }
 }
 

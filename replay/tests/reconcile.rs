@@ -5,8 +5,10 @@ use common::write_fixture_dataset;
 use replay::db;
 use replay::db::ingest::{build_db, BuildOpts};
 use replay::products::load_products;
-use replay::reconcile::reconcile_user;
-use replay::snapshot::{DbSnapshotSource, SnapshotSource};
+use replay::reconcile::{apply_block_height_fallback, reconcile_user};
+use replay::snapshot::{account_state_json_to_raw, DbSnapshotSource, SnapshotSource};
+use replay::timeline::UserSlice;
+use sweat_jar::replay::engine::{Action, Event, Timeline};
 
 fn build_fixture_db(dir: &std::path::Path) -> std::path::PathBuf {
     let src = dir.join("src");
@@ -166,6 +168,72 @@ fn account_not_found_via_invisible_creation_recovers_via_block_height_fallback()
     // account would show a spurious 100% divergence (calculated 0 vs
     // on-chain 5) despite reconciling cleanly.
     assert_eq!(row.actual_total_claim, "0", "row: {row:?}");
+}
+
+/// Confirms "no state at H", but also answers `raw_account_at` for one block
+/// height BEFORE the account's first tracked event — the fixture's stand-in
+/// for a real archival node revealing a pre-existing account created by an
+/// untracked event (e.g. a migration) sometime within the replay window,
+/// before the first event this export happens to track.
+struct PreEventStateOnly {
+    pre_event_block_height: u64,
+    state_json: &'static str,
+}
+
+impl SnapshotSource for PreEventStateOnly {
+    fn raw_account(&self, _account_id: i64, _near_account_id: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    fn is_authoritative(&self) -> bool {
+        true
+    }
+    fn raw_account_at(&self, _near_account_id: &str, block_height: u64) -> anyhow::Result<Option<Vec<u8>>> {
+        if block_height == self.pre_event_block_height {
+            Ok(Some(account_state_json_to_raw(self.state_json)?))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+#[test]
+fn deposit_first_account_with_invisible_pre_existing_state_recovers_via_block_height_fallback() {
+    // A Deposit-first account — exactly the case the old (narrower) fallback
+    // skipped entirely, trusting that a leading Deposit always means a
+    // genuinely fresh account. Here the account already held an untracked
+    // jar one block before this Deposit, simulating a migration that
+    // happened invisibly earlier in the window.
+    let slice = UserSlice {
+        backend_account_id: 9001,
+        near_account_id: "pre-existing.near".to_string(),
+        existed_at_start: false,
+        timezone_ms: Some(0),
+        onchain_claimed: 0,
+        first_event_block_height: Some(190_000_500),
+        first_event_claim_amount: None,
+    };
+    let timeline = Timeline {
+        events: vec![Event {
+            ts_ms: 1_774_000_100_000,
+            seq: 0,
+            action: Action::Deposit { product_id: "365d_12apy".to_string(), amount: 1_000_000_000_000_000_000_000 },
+        }],
+    };
+
+    let pre_existing_state = r#"{"nonce":1,"jars":{"90d_3apy":{"deposits":[["1700000000000","500000000000000000000"]],"cache":{"updated_at":"1774000000000","interest":"0"},"is_pending_withdraw":false,"claim_remainder":"0"}},"score":{"updated_at":1774000000000,"history":[]},"is_penalty_applied":false,"features":{},"timezone":0}"#;
+    let expected_bytes = account_state_json_to_raw(pre_existing_state).unwrap();
+
+    let snap = PreEventStateOnly { pre_event_block_height: 190_000_499, state_json: pre_existing_state };
+
+    let (raw_account, out_timeline, claimed_adjustment) =
+        apply_block_height_fallback(&snap, &slice, None, timeline);
+
+    assert_eq!(raw_account, Some(expected_bytes), "pre-existing state must be used as the baseline");
+    // The Deposit is NOT dropped — its own effect still needs replaying on
+    // top of the recovered baseline (unlike the post-event-fetch case,
+    // where the leading event's effect is already reflected in the state).
+    assert_eq!(out_timeline.events.len(), 1, "the Deposit must still be replayed, not dropped");
+    assert_eq!(claimed_adjustment, 0);
 }
 
 #[test]
