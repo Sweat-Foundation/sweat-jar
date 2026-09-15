@@ -39,6 +39,22 @@ fn account_200_maps_all_event_kinds() {
         })
         .collect();
     assert_eq!(kinds, vec!["deposit", "score", "booster", "claim"]);
+
+    // The fixture's record_score payload timestamp (1774065600000) is the
+    // *Local* value `record_score`'s own event would emit for a UTC-5
+    // account (`ScoreData.score: Vec<(Score, Local)>`) — not the raw UTC the
+    // oracle submitted. `load_user` must subtract the account's timezone
+    // (-18_000_000ms = -5h) to recover that raw UTC before it's replayed
+    // (the engine's `record_score` call re-applies the shift on the way
+    // in); feeding the Local value straight back in would double-apply it
+    // and can bucket the step into the wrong calendar day. Recovering
+    // 1774065600000 - (-18_000_000) = 1774083600000 exceeds this event's own
+    // block time (1774072800000), so the existing future-clamp caps it
+    // there — this is the value the engine actually replays.
+    let Action::RecordScore(pairs) = &tl.events[1].action else {
+        panic!("expected RecordScore at index 1, got {:?}", tl.events[1].action);
+    };
+    assert_eq!(pairs, &vec![(9000, 1_774_072_800_000)]);
 }
 
 #[test]

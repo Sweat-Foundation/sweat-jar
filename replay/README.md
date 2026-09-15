@@ -273,8 +273,34 @@ them).
 
 ## Known error causes
 
-Root-caused from real `error:`/`failure:` rows on production data:
+Root-caused from real `error:`/`failure:` rows on production data (plus one
+silent `over_tolerance` source, listed first since it was the single largest
+one found so far):
 
+- **Double-applied timezone shift on `record_score` (fixed)** — the
+  `record_score` event stores each pair's *Local* (timezone-adjusted)
+  timestamp, not the raw UTC the oracle submitted (`ScoreData.score:
+  Vec<(Score, Local)>`, `contract/src/common/event.rs`). The replay fed that
+  Local value straight back into the engine's `record_score` call, which
+  re-applies the account's timezone shift on the way in — double-applying it
+  for every nonzero-timezone account. Whenever a step's real Local timestamp
+  landed within `|timezone|` of local midnight, the double shift pushed it
+  into the wrong calendar day, changing which score tier that day's APY was
+  computed against. Verified against the real contract with a scratch test
+  (`truth` = raw UTC in vs `mirror` = Local fed back as UTC — different
+  `score.history` for the same real-world step) before fixing. `timeline.rs`
+  now subtracts `timezone_ms` from each pair before wrapping it as `UTC`,
+  recovering the raw value the oracle actually submitted. On the 1000-account
+  sample this fixed 37 of 88 `over_tolerance` accounts to an exact
+  `calculated == actual` match; a handful of others improved but didn't fully
+  close (a separate, still-unidentified cause). Two other explanations were
+  investigated and ruled out first: the pre-v4.2.3 `settle_interest`
+  double-shift bug (`replay-engine` already reproduces the historical,
+  unfixed behavior — see `model/src/data/score/mod.rs` — so version skew
+  wasn't the cause; confirmed by running both builds and finding the
+  divergent claims identical in each) and `apply_penalty`/`IncreasedApy`
+  (confirmed via a chain scan: the flag never toggled for the account
+  investigated).
 - **`Timestamp from future`** — would fire if a `record_score`/`apply_booster`
   increment's own timestamp is after the event's block time, which happens in
   a minority of the export's rows (an export artifact — the increment

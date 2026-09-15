@@ -76,15 +76,36 @@ pub fn load_user(conn: &Connection, backend_account_id: i64) -> Result<(UserSlic
             continue;
         };
         let action = match parsed {
-            // Only `SUCCESS_VALUE` rows are ingested, so the on-chain call already
-            // passed `assert_not_future` against this very block time: an increment
-            // timestamp after `ts_ms` is an export artifact (the payload ts
-            // disagreeing with its own `block_timestamp_utc`), never a real state.
-            // Clamping keeps replay from panicking on it; `assert_not_future`
-            // adjusts both sides by the timezone, so this is timezone-independent.
-            ParsedEvent::RecordScore(pairs) => Action::RecordScore(
-                pairs.into_iter().map(|(score, ts)| (score, ts.min(ts_ms))).collect(),
-            ),
+            // `record_score`'s emitted event stores each pair's *Local*
+            // (timezone-adjusted) timestamp, not the raw UTC the oracle
+            // submitted (`ScoreData.score: Vec<(Score, Local)>`,
+            // `contract/src/common/event.rs`). The engine's `record_score`
+            // call re-applies the account's timezone shift on the way in, so
+            // feeding the Local value straight back in double-applies it —
+            // for a nonzero-timezone account, a step landing within
+            // `|timezone|` of local midnight gets bucketed into the wrong
+            // calendar day (verified against the real contract: see the
+            // investigation in `replay/README.md`'s "Known error causes").
+            // Subtract the timezone to recover the raw UTC value first.
+            //
+            // Only `SUCCESS_VALUE` rows are ingested, so the on-chain call
+            // already passed `assert_not_future` against this very block
+            // time: a recovered UTC timestamp after `ts_ms` is an export
+            // artifact (the payload disagreeing with its own
+            // `block_timestamp_utc`), never a real state — clamped the same
+            // way as `ApplyBooster` below.
+            ParsedEvent::RecordScore(pairs) => {
+                let tz = timezone_ms.unwrap_or(0);
+                Action::RecordScore(
+                    pairs
+                        .into_iter()
+                        .map(|(score, local_ts)| {
+                            let utc_ts = (local_ts as i64 - tz).max(0) as u64;
+                            (score, utc_ts.min(ts_ms))
+                        })
+                        .collect(),
+                )
+            }
             ParsedEvent::ApplyBooster { score, timestamp_ms } => {
                 Action::ApplyBooster { score, timestamp_ms: timestamp_ms.min(ts_ms) }
             }
