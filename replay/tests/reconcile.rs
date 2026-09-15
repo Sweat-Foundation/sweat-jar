@@ -236,19 +236,16 @@ fn deposit_first_account_with_invisible_pre_existing_state_recovers_via_block_he
     assert_eq!(claimed_adjustment, 0);
 }
 
-/// Answers `raw_account_at` for BOTH the pre-event and the post-event block
-/// height, with different content — the fixture's stand-in for a multi-receipt
-/// operation (lock jars, promise, callback emits the event) whose pre-event
-/// block can show a transient mid-flight snapshot of that very same
-/// operation, not a genuinely separate prior state.
-struct BothHeightsAnswered {
-    pre_event_block_height: u64,
-    pre_event_state_json: &'static str,
-    post_event_block_height: u64,
-    post_event_state_json: &'static str,
+/// Answers `raw_account_at` for a fixed set of heights with distinguishable
+/// content — the fixture's stand-in for a multi-receipt operation (lock
+/// jars, promise, callback emits the event) whose immediately-preceding
+/// blocks can show transient mid-flight snapshots of that very same
+/// operation, resolving to the true prior state only a few blocks earlier.
+struct HeightsAnswered {
+    answers: Vec<(u64, &'static str)>,
 }
 
-impl SnapshotSource for BothHeightsAnswered {
+impl SnapshotSource for HeightsAnswered {
     fn raw_account(&self, _account_id: i64, _near_account_id: &str) -> anyhow::Result<Option<Vec<u8>>> {
         Ok(None)
     }
@@ -256,47 +253,79 @@ impl SnapshotSource for BothHeightsAnswered {
         true
     }
     fn raw_account_at(&self, _near_account_id: &str, block_height: u64) -> anyhow::Result<Option<Vec<u8>>> {
-        if block_height == self.pre_event_block_height {
-            Ok(Some(account_state_json_to_raw(self.pre_event_state_json)?))
-        } else if block_height == self.post_event_block_height {
-            Ok(Some(account_state_json_to_raw(self.post_event_state_json)?))
-        } else {
-            Ok(None)
+        match self.answers.iter().find(|(h, _)| *h == block_height) {
+            Some((_, json)) => Ok(Some(account_state_json_to_raw(json)?)),
+            None => Ok(None),
         }
     }
 }
 
+const LOCKED_STATE_JSON: &str = r#"{"nonce":0,"jars":{"365d_12apy":{"deposits":[["1774000000000","1"]],"cache":null,"is_pending_withdraw":true,"claim_remainder":"0"},"90d_3apy":{"deposits":[["1774000000000","1"]],"cache":null,"is_pending_withdraw":true,"claim_remainder":"0"}},"score":{"updated_at":1774000000000,"history":[]},"is_penalty_applied":false,"features":{},"timezone":0}"#;
+
 #[test]
-fn non_deposit_first_action_never_checks_the_pre_event_block() {
+fn non_deposit_first_action_never_uses_a_locked_snapshot() {
     // account 500: first tracked event is a multi-jar `restake` (not a
     // `Deposit`) at block_height 190000800 — a multi-receipt operation on
     // the real chain (lock jars, withdrawal promise, callback emits the
-    // event). If the fallback checked the pre-event block for a non-Deposit
-    // first action, it could pick up a transient locked snapshot of that
-    // very same restake instead of a genuinely separate prior state
-    // (verified against a real production account: `is_pending_withdraw:
-    // true` on the jars the restake was about to consume, one block before
-    // its own log event) — silently corrupting the baseline. Both heights
-    // answer here with different, distinguishable content; only the
-    // post-event one must ever be used.
+    // event). The block right before it answers with a locked (mid-flight)
+    // snapshot of that very same restake (verified against a real
+    // production account: `is_pending_withdraw: true` on the jars the
+    // restake was about to consume, one block before its own log event).
+    // Only the post-event block answers otherwise, so if the fallback used
+    // the locked snapshot as the baseline instead of walking further back
+    // or falling through to the post-event fetch, replaying the restake on
+    // top of it would panic.
     let d = tempfile::tempdir().unwrap();
     let dbp = build_fixture_db(d.path());
     let c = db::open_read(&dbp).unwrap();
 
-    let snap = BothHeightsAnswered {
-        pre_event_block_height: 190_000_799,
-        pre_event_state_json: r#"{"nonce":0,"jars":{"365d_12apy":{"deposits":[["1774000000000","1"]],"cache":null,"is_pending_withdraw":true,"claim_remainder":"0"},"90d_3apy":{"deposits":[["1774000000000","1"]],"cache":null,"is_pending_withdraw":true,"claim_remainder":"0"}},"score":{"updated_at":1774000000000,"history":[]},"is_penalty_applied":false,"features":{},"timezone":0}"#,
-        post_event_block_height: 190_000_800,
-        post_event_state_json: r#"{"nonce":1,"jars":{"365d_12apy":{"deposits":[["1774000000000","9"]],"cache":null,"is_pending_withdraw":false,"claim_remainder":"0"}},"score":{"updated_at":1774000000000,"history":[]},"is_penalty_applied":false,"features":{},"timezone":0}"#,
+    let snap = HeightsAnswered {
+        answers: vec![
+            (190_000_799, LOCKED_STATE_JSON),
+            (190_000_800, r#"{"nonce":1,"jars":{"365d_12apy":{"deposits":[["1774000000000","9"]],"cache":null,"is_pending_withdraw":false,"claim_remainder":"0"}},"score":{"updated_at":1774000000000,"history":[]},"is_penalty_applied":false,"features":{},"timezone":0}"#),
+        ],
     };
 
     let row = reconcile_user(&c, 500, &products(), &snap).unwrap();
-    // If the pre-event (locked, mid-flight) snapshot had been used as the
-    // baseline AND the restake replayed on top of it, this would panic as
-    // "error: Not enough funds to restake" (reproduced against the real
-    // account this scenario is modeled on). Landing on "ok" proves only the
-    // post-event height was ever consulted.
+    // If the locked snapshot had been used as the baseline AND the restake
+    // replayed on top of it, this would panic as "error: Not enough funds
+    // to restake" (reproduced against the real account this scenario is
+    // modeled on). Landing on "ok" proves it was never used as-is.
     assert_eq!(row.status, "ok", "row: {row:?}");
+}
+
+#[test]
+fn walkback_skips_multiple_locked_snapshots_to_find_the_true_prior_state() {
+    // Same account 500 restake, but now the true pre-restake state sits
+    // THREE blocks back (190000797), with locked snapshots at both
+    // intermediate heights (190000799, 190000798) — exactly the shape found
+    // on the real production account this fallback is modeled on (locked at
+    // offset 1 and 2, resolved at offset 3). Unlike the previous test, this
+    // checks `apply_block_height_fallback` directly so the exact recovered
+    // baseline and the untouched timeline can be asserted precisely.
+    let d = tempfile::tempdir().unwrap();
+    let dbp = build_fixture_db(d.path());
+    let c = db::open_read(&dbp).unwrap();
+    let (slice, timeline) = replay::timeline::load_user(&c, 500).unwrap();
+    assert_eq!(timeline.events.len(), 1, "fixture account 500 should have exactly the one restake event");
+
+    let true_prior_state = r#"{"nonce":0,"jars":{"365d_12apy":{"deposits":[["1774000000000","1"]],"cache":null,"is_pending_withdraw":false,"claim_remainder":"0"},"90d_3apy":{"deposits":[["1774000000000","1"]],"cache":null,"is_pending_withdraw":false,"claim_remainder":"0"}},"score":{"updated_at":1774000000000,"history":[]},"is_penalty_applied":false,"features":{},"timezone":0}"#;
+    let expected_bytes = account_state_json_to_raw(true_prior_state).unwrap();
+
+    let snap = HeightsAnswered {
+        answers: vec![
+            (190_000_799, LOCKED_STATE_JSON),
+            (190_000_798, LOCKED_STATE_JSON),
+            (190_000_797, true_prior_state),
+        ],
+    };
+
+    let (raw_account, out_timeline, claimed_adjustment) =
+        apply_block_height_fallback(&snap, &slice, None, timeline);
+
+    assert_eq!(raw_account, Some(expected_bytes), "must walk back past both locked snapshots to the resolved state");
+    assert_eq!(out_timeline.events.len(), 1, "the restake must still be replayed, not dropped");
+    assert_eq!(claimed_adjustment, 0);
 }
 
 #[test]

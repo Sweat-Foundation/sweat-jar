@@ -212,6 +212,23 @@ impl SnapshotSource for ArchivalRpcSnapshotSource {
     }
 }
 
+/// Whether any jar in these raw account bytes is mid-lock (`is_locked`).
+/// `Restake`/`Claim`/`Withdraw`/`WithdrawAll` all lock the jars they touch
+/// before sending a transfer promise, and only unlock (and emit their event)
+/// from the callback — so state fetched at a block during that window is a
+/// transient snapshot of whichever one of those operations is still in
+/// flight, not a genuinely resolved prior state. Every raw-account encoder in
+/// this module always produces `AccountVersioned::V2` (`account_state_value_to_raw`),
+/// so the match is exhaustive in practice; any other shape (a decode failure)
+/// conservatively reports "not locked" — the caller treats that candidate as
+/// usable rather than looping forever on a source that can't decode.
+pub fn any_jar_locked(raw: &[u8]) -> bool {
+    match near_sdk::borsh::from_slice::<AccountVersioned>(raw) {
+        Ok(AccountVersioned::V2(account)) => account.jars.values().any(|j| j.is_locked),
+        _ => false,
+    }
+}
+
 /// `account_state` JSON value -> borsh(`AccountVersioned`) bytes.
 /// `crate::parse::H_MS` is the `score.updated_at` fallback (see `engine::parse_account_state`).
 fn account_state_value_to_raw(state: &near_sdk::serde_json::Value) -> Result<Vec<u8>> {

@@ -9,7 +9,7 @@ use sweat_jar::replay::engine::{self, Action, ReplayStatus, Timeline};
 use sweat_jar_model::data::product::Product;
 
 use crate::parse;
-use crate::snapshot::SnapshotSource;
+use crate::snapshot::{any_jar_locked, SnapshotSource};
 use crate::timeline::{self, UserSlice};
 
 /// Set `REPLAY_TIMING=1` to print one `TIMING …` line per account to stderr —
@@ -95,39 +95,53 @@ fn call_snapshot_safely(
     }
 }
 
+/// How many blocks `apply_block_height_fallback` walks backward from the
+/// first tracked event looking for a genuinely resolved (unlocked) prior
+/// state, before giving up and falling back to the post-event fetch. Real
+/// cross-contract callbacks on NEAR resolve within a handful of blocks;
+/// this just bounds the worst case (a pathological or never-resolved lock)
+/// to a fixed number of extra RPC calls, made only for the rare accounts
+/// this fallback applies to at all.
+const MAX_LOCK_WALKBACK_BLOCKS: u64 = 20;
+
 /// Confirmed-empty at block H (an authoritative source said so) — but that
 /// doesn't mean the account was still empty right before its first *tracked*
 /// event. Something invisible to the 7 tracked event types (most commonly an
 /// `FtMessage::Migrate` from a previous contract version, which writes
 /// storage directly and emits no event at all) can create an account
 /// anywhere within the replay window, including well before an otherwise
-/// perfectly ordinary `Deposit` that would normally be trusted to be the
-/// account's genesis. Two cases, mutually exclusive by the first action's
-/// kind (never both attempted for the same account):
+/// perfectly ordinary first event that would normally be trusted to be the
+/// account's genesis.
 ///
-/// 1. **First action is a `Deposit`: check the state one block before it.**
-///    `deposit()` (via `FtMessage::Stake`) completes within a single
-///    receipt — no lock, no promise/callback — so state one block earlier is
-///    genuinely a separate prior moment, never a mid-flight snapshot of the
-///    Deposit itself. If non-empty, the account already had jars nobody
+/// `Restake`/`Claim`/`Withdraw`/`WithdrawAll` all lock the jars they touch
+/// before sending a transfer promise, and only unlock (and emit their event)
+/// from the *callback* — one or more blocks later. So "one block before the
+/// first event's own block" can land mid-operation (jars still marked
+/// `is_locked`), a transient snapshot of that SAME event, not a genuinely
+/// separate prior state (confirmed by tracing a real account this way:
+/// `is_pending_withdraw: true` on the jars a Restake was about to consume,
+/// resolving to the true pre-restake state only 3 blocks earlier). `Deposit`
+/// and the score/feature actions never lock anything, so they're always safe
+/// on the first try.
+///
+/// Two cases, checked in order:
+///
+/// 1. **Walk backward from the first event, skipping locked snapshots.**
+///    Query one block earlier, then two, … up to
+///    [`MAX_LOCK_WALKBACK_BLOCKS`], stopping at the first state with no
+///    locked jars. If found non-empty, the account already had jars nobody
 ///    among our 7 event types created; use that state as the baseline and
-///    replay the Deposit normally on top of it (do NOT drop it).
-/// 2. **First action is anything else: the already-shipped post-event
-///    fetch.** Restake/Withdraw/WithdrawAll lock jars, send a
-///    withdrawal/transfer promise, and only emit their event from the
-///    *callback*, one or more blocks later — so "one block before the
-///    event's own block" can land mid-operation (e.g. jars still marked
-///    `is_pending_withdraw`), a transient snapshot of the very same action,
-///    not a separate prior state (confirmed by tracing a real account this
-///    way: `is_pending_withdraw: true` on the jars a Restake was about to
-///    consume, one block before its own log event). So for a non-`Deposit`
-///    first action we only ever check the event's own (post-execution)
-///    block height, on the theory that a non-Deposit first action itself
-///    proves the account already existed — the invisible creation must have
-///    happened at or before this event, and NEAR's view-at-height semantics
-///    return state as of right after this block's receipts ran, already
-///    reflecting it. This leading event is then dropped from the timeline
-///    before replaying the rest.
+///    replay the first tracked event normally on top of it (do NOT drop
+///    it — restaking it there is no different from any other in-dataset
+///    restake, composition risk included).
+/// 2. **Post-event fetch (unchanged from before).** If the walk-back hits a
+///    genuinely empty block before finding an unlocked one — or the first
+///    event itself doesn't lock anything, so genuinely-empty is the
+///    immediate answer — the invisible creation must have happened at or
+///    during this event's own block. NEAR's view-at-height semantics return
+///    state as of right after that block's receipts ran, already reflecting
+///    it, so this leading event is dropped from the timeline before
+///    replaying the rest.
 ///
 /// Returns the (possibly updated) baseline, (possibly trimmed) timeline, and
 /// an `onchain_claimed` adjustment: when case 2 drops a leading `Claim`, its
@@ -147,21 +161,21 @@ pub fn apply_block_height_fallback(
     let Some(block_height) = slice.first_event_block_height else {
         return (raw_account, timeline, 0);
     };
-    let first_is_deposit =
-        matches!(timeline.events.first(), Some(e) if matches!(e.action, Action::Deposit { .. }));
 
-    // Case 1: Deposit is single-receipt/atomic, so the block right before it
-    // is always safe to check.
-    if first_is_deposit {
-        return match call_snapshot_safely(snapshot, &slice.near_account_id, block_height.saturating_sub(1)) {
-            Some(bytes) => (Some(bytes), timeline, 0),
-            None => (raw_account, timeline, 0),
-        };
+    // Case 1: walk backward past any locked (mid-flight) snapshot.
+    for offset in 1..=MAX_LOCK_WALKBACK_BLOCKS {
+        let h = block_height.saturating_sub(offset);
+        match call_snapshot_safely(snapshot, &slice.near_account_id, h) {
+            Some(bytes) if !any_jar_locked(&bytes) => return (Some(bytes), timeline, 0),
+            Some(_) if h == 0 => break, // still locked at the chain's start — nowhere earlier to look
+            Some(_) => continue,        // still locked — keep walking back
+            None => break,              // genuinely empty — nothing earlier to find
+        }
     }
 
-    // Case 2: any other first action may be a multi-receipt operation (lock
-    // + promise + callback) — only the event's own (post-execution) block is
-    // ever safe to check.
+    // Case 2: no usable pre-event state (genuinely empty, or every candidate
+    // within the walk-back budget was locked) — fall back to the post-event
+    // fetch, dropping the leading event whose effect it already reflects.
     match call_snapshot_safely(snapshot, &slice.near_account_id, block_height) {
         Some(bytes) => {
             let dropped = timeline.events.remove(0);
