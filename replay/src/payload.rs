@@ -24,8 +24,12 @@ pub enum ParsedEvent {
     Claim { total: u128, timestamp_ms: u64 },
 }
 
-/// `role` is the event row's `role` column (only meaningful for `apply_booster`).
-pub fn parse_event(event: &str, role: Option<&str>, payload: &str) -> Result<Option<ParsedEvent>> {
+/// `_role` is the event row's `role` column (`apply_booster`'s
+/// `applied`/`rejected`) — no longer consulted here; both roles replay the
+/// same way, see the `apply_booster` arm's doc comment below. Kept in the
+/// signature since callers already have the column at hand from the same
+/// query that reads `event`/`payload`.
+pub fn parse_event(event: &str, _role: Option<&str>, payload: &str) -> Result<Option<ParsedEvent>> {
     let v: Value = serde_json::from_str(payload)
         .with_context(|| format!("payload not JSON for {event}: {payload:?}"))?;
     match event {
@@ -42,9 +46,28 @@ pub fn parse_event(event: &str, role: Option<&str>, payload: &str) -> Result<Opt
             Ok((!out.is_empty()).then_some(ParsedEvent::RecordScore(out)))
         }
         "apply_booster" => {
-            if role != Some("applied") {
-                return Ok(None);
-            }
+            // `role` (`applied`/`rejected`) reflects only whether THIS
+            // specific booster mutation landed — it does NOT mean the call
+            // was a no-op. `apply_booster()` unconditionally calls
+            // `settle_interest()` before ever checking whether the booster
+            // itself will apply or get rejected, and `settle_interest`'s
+            // `shift()`/`wipe()` roll the 2-day score window regardless.
+            // Dropping `rejected` rows here (as this code used to) makes
+            // that real, on-chain window roll invisible to the replay —
+            // and because `shift()`/`wipe()` don't stamp `updated_at` in
+            // this build (reproducing the pre-v4.2.3 bug, see
+            // `model/src/data/score/mod.rs`), a later `record_score` can
+            // then roll the window a SECOND time on the real chain (having
+            // seen the same `days_since_last_update >= 1`) while our
+            // replay only rolls it once, since it never replayed the
+            // rejected booster's roll at all — leaving stale score history
+            // in the replay that the real chain already dropped. Replaying
+            // both roles as `Action::ApplyBooster` lets our own engine's
+            // `apply_booster()` independently decide applied/rejected from
+            // its own state (which is the point — we don't force either
+            // outcome), while still reproducing the `settle_interest` side
+            // effect regardless of that outcome. See `replay/README.md`'s
+            // "Known error causes".
             let score = str_num_u16(&v["score"]).context("booster score")?;
             let timestamp_ms = str_num_u64(&v["timestamp"]).context("booster timestamp")?;
             Ok(Some(ParsedEvent::ApplyBooster { score, timestamp_ms }))
@@ -144,9 +167,14 @@ mod tests {
     }
 
     #[test]
-    fn apply_booster_rejected_is_none() {
-        assert!(parse_event("apply_booster", Some("rejected"),
-            r#"{"timestamp":"1","score":"1"}"#).unwrap().is_none());
+    fn apply_booster_rejected_still_replays() {
+        // `rejected` means only the booster mutation itself didn't apply —
+        // the call's `settle_interest()` side effect still happened on
+        // chain, so it must still be replayed (see the `apply_booster` arm's
+        // doc comment in `parse_event`).
+        let p = parse_event("apply_booster", Some("rejected"),
+            r#"{"timestamp":"1","score":"1"}"#).unwrap().unwrap();
+        assert!(matches!(p, ParsedEvent::ApplyBooster { score: 1, timestamp_ms: 1 }));
     }
 
     #[test]
