@@ -45,6 +45,17 @@ rsync -avP test_data/interest_replay/ target-host:sweat-jar/test_data/interest_r
 `test_data/products.json` is optional — the container fetches it from mainnet
 on first run if it's missing (see step 3).
 
+`test_data/jars_merge_events/` (the JarsMerge migration export) is also
+optional and gitignored — copy it the same way if you have it:
+
+```sh
+rsync -avP test_data/jars_merge_events/ target-host:sweat-jar/test_data/jars_merge_events/
+```
+
+`build-db` populates the `migrations` table from it when present; if it's
+absent, `build-db` silently falls back to the walk-back heuristic instead
+(see `replay/README.md`'s `db` schema section).
+
 ## 2. Build the image
 
 ```sh
@@ -152,3 +163,23 @@ rsync -avP target-host:sweat-jar/test_data/replay.duckdb .
 ```sh
 ./replay/docker/run.sh -- explain --db /data/replay.duckdb --account <backend_account_id> --archival
 ```
+
+## Bisecting a divergence
+
+`bisect` (see `replay/README.md`) replays one account's timeline event by
+event, comparing the engine's state after each event against live archival
+state at that event's own block height, and reports the first event where
+they disagree. It's not part of the default `entrypoint.sh` pipeline
+(`run`/`build-db`/`export-csv`/`explain`), so invoke it by overriding the
+container's entrypoint directly:
+
+```sh
+docker run --rm -v "$(pwd)/test_data:/data" \
+    -e FASTNEAR_API_KEY \
+    --entrypoint /usr/local/bin/bisect \
+    sweat-jar-replay:local \
+    --db /data/replay.duckdb --account <backend_account_id> --products /data/products.json
+```
+
+It always uses the archival RPC (there's no `--archival` flag to pass), so
+`FASTNEAR_API_KEY` matters here the same way it does for a live `run`.

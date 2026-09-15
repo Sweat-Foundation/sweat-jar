@@ -25,7 +25,8 @@ COPY . .
 # defaulting to one-per-core. Bump this (or drop the flag) on a build host
 # with more RAM per core.
 RUN cargo build -p replay --profile release-replay --jobs 4 \
-    && cp target/release-replay/replay /usr/local/bin/replay
+    && cp target/release-replay/replay /usr/local/bin/replay \
+    && cp target/release-replay/bisect /usr/local/bin/bisect
 RUN cargo build -p replay --profile release-replay --features corrected-score-window --jobs 4 \
     && cp target/release-replay/replay /usr/local/bin/replay-corrected-score-window
 
@@ -41,6 +42,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=builder /usr/local/bin/replay /usr/local/bin/replay
 COPY --from=builder /usr/local/bin/replay-corrected-score-window /usr/local/bin/replay-corrected-score-window
+# Debug tool (see replay/README.md's "Tracing a divergence" section) — not
+# reachable through entrypoint.sh's default pipeline; invoke it with
+# `docker run --entrypoint /usr/local/bin/bisect ...` (see
+# replay/docker/README.md).
+COPY --from=builder /usr/local/bin/bisect /usr/local/bin/bisect
 COPY replay/docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
