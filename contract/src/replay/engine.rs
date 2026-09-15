@@ -311,14 +311,6 @@ pub fn run_timeline_traced(
                     let _ = context.contract().restake_all(ticket, None, Some(amount.into()));
                 }
                 Action::AirdropWithBooster { product_id, amount, score, timestamp_ms } => {
-                    set_timezone_before_score_jar(
-                        &mut context,
-                        &account_id,
-                        baseline.timezone_ms,
-                        products,
-                        &product_id,
-                        &mut timezone_applied,
-                    );
                     context.switch_account_to_operator();
                     // Mirrors `airdrop()`'s exact per-receiver order — see the
                     // `Action::AirdropWithBooster` doc comment. `settle_interest`
@@ -333,6 +325,26 @@ pub fn run_timeline_traced(
                         valid_until: 0.into(),
                         timezone: Some(Timezone::hour_shift(0)),
                     };
+                    // Real `airdrop()` calls `prepare_account_for_airdrop()`
+                    // FIRST, which sets the account's timezone from the
+                    // ticket (`account.try_set_timezone(ticket.timezone)`) —
+                    // NOT from `baseline.timezone_ms` like
+                    // `set_timezone_before_score_jar` does. Skipping this
+                    // step left the timezone unset for any account whose
+                    // feed carries no timezone at all, causing
+                    // `create_airdrop_deposit`'s `update_jar_cache` ->
+                    // `get_interest_calculation_term` (which calls
+                    // `account.timezone.adjust()` unconditionally, no
+                    // validity check) to panic on an i64::MIN timezone,
+                    // rather than the account picking up this ticket's own
+                    // timezone the way a real deposit-with-booster receiver
+                    // would. `try_set_timezone` is a no-op if the account's
+                    // timezone is already valid (from an earlier score-based
+                    // Deposit or the baseline itself), matching production.
+                    if products.iter().any(|p| p.id == product_id && p.terms.is_score_based()) {
+                        context.contract().get_or_create_account_mut(&account_id).try_set_timezone(ticket.timezone);
+                        timezone_applied = true;
+                    }
                     context.contract().settle_interest_before_booster(&account_id, score);
                     let product = context.contract().get_product(&product_id);
                     context.contract().create_airdrop_deposit(&account_id, &ticket, amount, &product, event.ts_ms);

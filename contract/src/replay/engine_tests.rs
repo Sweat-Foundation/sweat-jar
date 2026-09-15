@@ -290,6 +290,44 @@ fn airdrop_with_booster_creates_the_jar_and_applies_the_booster() {
     assert_eq!(view.score.history[0].booster, 5_000);
 }
 
+/// Regression for a real production account: `AirdropWithBooster` used to
+/// rely solely on `set_timezone_before_score_jar` (which only consults the
+/// feed's OWN `baseline.timezone_ms`) to set the account's timezone before
+/// creating the jar. When the feed has no timezone for an account at all
+/// (`timezone_ms: None` — genuinely common: the export's own
+/// `account_timezones` table leaves some accounts unset), that left the
+/// timezone at its invalid default, and `create_airdrop_deposit`'s
+/// `update_jar_cache` -> `get_interest_calculation_term` (which calls
+/// `account.timezone.adjust()` unconditionally, no validity check, for a
+/// score-based product) panicked with "Failed to adjust timestamp" instead
+/// of the account picking up the deposit ticket's own timezone the way a
+/// real `airdrop()` receiver does (via `prepare_account_for_airdrop`).
+#[test]
+fn airdrop_with_booster_sets_timezone_from_the_ticket_when_the_feed_has_none() {
+    let account_id: near_sdk::AccountId = "no-feed-tz.near".parse().unwrap();
+    let timeline = Timeline {
+        events: vec![Event {
+            ts_ms: DAY_MS,
+            seq: 0,
+            action: Action::AirdropWithBooster {
+                product_id: "steps_365d_20000".into(),
+                amount: 1_000 * 10u128.pow(18),
+                score: 5_000,
+                timestamp_ms: DAY_MS,
+            },
+        }],
+    }
+    .sorted();
+
+    let outcome = run_timeline(
+        Baseline { account_id, raw_account: None, timezone_ms: None },
+        &[score_product()],
+        0,
+        timeline,
+    );
+    assert!(matches!(outcome.status, ReplayStatus::Ok), "status: {:?}", outcome.status);
+}
+
 #[test]
 fn same_millisecond_deposit_and_booster_replay_in_log_index_order() {
     // Regression for a real production account: a `deposit` (log_index 0) and
