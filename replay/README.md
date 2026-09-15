@@ -301,6 +301,38 @@ one found so far):
   divergent claims identical in each) and `apply_penalty`/`IncreasedApy`
   (confirmed via a chain scan: the flag never toggled for the account
   investigated).
+- **Claim's own embedded timestamp discarded (fixed)** — `claim_total()`
+  uses `env::block_timestamp_ms()` for `now` in every jar's interest
+  calculation, and embeds that exact value into the emitted `claim` event's
+  own `timestamp` field (`ClaimData.timestamp`) — a precise, ground-truth
+  record of what the real contract used. The replay was discarding this
+  field during parsing and using the export's block-level `ts_ms` instead,
+  which lags the real per-receipt execution instant by ~1.2s on average
+  (up to 33s) across the full export (measured over 3.68M claim rows) — the
+  same class of artifact already handled for `record_score`/`apply_booster`,
+  just missed for claims. `payload.rs` now parses and keeps this field;
+  `Action::Claim` carries it and the engine sets mock block time to it
+  before calling `claim_total()`. On the 1000-account sample this took
+  `over_tolerance` from 50 to 43 and made 2 of one investigated account's 7
+  claims exact-match; most of the remaining divergence is still open.
+- **Airdrop-with-booster's internal order (fixed, but doesn't explain the
+  divergence)** — the `airdrop()` contract call runs
+  `settle_interest_before_booster` *before* the jar it's about to create
+  exists, then creates the jar, then applies the booster directly (never
+  through the public `apply_booster()` API, whose own `settle_interest`
+  call would instead run *after* the jar exists). The replay modeled a
+  `deposit` + `apply_booster` pair sharing one on-chain block as two
+  independent top-level actions, getting this internal order backwards.
+  `timeline.rs`'s `merge_airdrop_boosters` now detects the same-block pair
+  (verified ~1:1 against a `receipt_order`-cohort export's
+  `is_deposit_with_booster` flag) and replays it as one
+  `Action::AirdropWithBooster`, mirroring the real internal sequence. A
+  decisive contract-level test proved the ordering does **not** change the
+  final claimed total in the scenario tested (`since_date`'s
+  `max(cache_updated_at, deposit.created_at)` floor absorbs the cache-timing
+  difference) — kept for state-fidelity (nonce, exact `cache.updated_at`
+  match real chain, useful for future bisection work), not because it's
+  confirmed to fix any claim-total divergence.
 - **`Timestamp from future`** — would fire if a `record_score`/`apply_booster`
   increment's own timestamp is after the event's block time, which happens in
   a minority of the export's rows (an export artifact — the increment
