@@ -211,6 +211,7 @@ fn deposit_first_account_with_invisible_pre_existing_state_recovers_via_block_he
         onchain_claimed: 0,
         first_event_block_height: Some(190_000_500),
         first_event_claim_amount: None,
+        migration: None,
     };
     let timeline = Timeline {
         events: vec![Event {
@@ -325,6 +326,85 @@ fn walkback_skips_multiple_locked_snapshots_to_find_the_true_prior_state() {
 
     assert_eq!(raw_account, Some(expected_bytes), "must walk back past both locked snapshots to the resolved state");
     assert_eq!(out_timeline.events.len(), 1, "the restake must still be replayed, not dropped");
+    assert_eq!(claimed_adjustment, 0);
+}
+
+/// Panics if ever asked for account state at all — proves a code path never
+/// touches the network.
+struct PanicsIfCalled;
+
+impl SnapshotSource for PanicsIfCalled {
+    fn raw_account(&self, _account_id: i64, _near_account_id: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
+    fn is_authoritative(&self) -> bool {
+        true
+    }
+    fn raw_account_at(&self, _near_account_id: &str, _block_height: u64) -> anyhow::Result<Option<Vec<u8>>> {
+        panic!("raw_account_at must not be called when the migrations table already has the raw bytes")
+    }
+}
+
+#[test]
+fn migration_record_with_raw_bytes_bypasses_the_network_entirely() {
+    // account 300: fresh, deposit -> withdraw_all. Insert a `migrations` row
+    // for it directly (standing in for the `jars_merge_events` export,
+    // which the shared test fixture doesn't carry) with the raw bytes
+    // already present — the ~98% case where the export captured
+    // `migrated_jars_borsh_base64`. This must be used as-is, with no
+    // archival call at all.
+    let d = tempfile::tempdir().unwrap();
+    let dbp = build_fixture_db(d.path());
+    let c = db::open_write(&dbp).unwrap();
+
+    let migrated_state = r#"{"nonce":1,"jars":{"90d_3apy":{"deposits":[["1700000000000","500000000000000000000"]],"cache":{"updated_at":"1774000000000","interest":"0"},"is_pending_withdraw":false,"claim_remainder":"0"}},"score":{"updated_at":1774000000000,"history":[]},"is_penalty_applied":false,"features":{},"timezone":0}"#;
+    let expected_bytes = account_state_json_to_raw(migrated_state).unwrap();
+    c.execute(
+        "INSERT INTO migrations VALUES (300, 190000000, ?)",
+        duckdb::params![expected_bytes],
+    )
+    .unwrap();
+
+    let (slice, timeline) = replay::timeline::load_user(&c, 300).unwrap();
+    assert!(slice.migration.is_some(), "the inserted migration row must be loaded");
+
+    let (raw_account, out_timeline, claimed_adjustment) =
+        apply_block_height_fallback(&PanicsIfCalled, &slice, None, timeline);
+
+    assert_eq!(raw_account, Some(expected_bytes));
+    assert_eq!(out_timeline.events.len(), 2, "both events must still be replayed, not dropped");
+    assert_eq!(claimed_adjustment, 0);
+}
+
+#[test]
+fn migration_record_without_raw_bytes_does_one_direct_fetch_at_its_own_block() {
+    // Same account 300, but the `migrations` row has no raw bytes (the ~2%
+    // export gap) — a single fetch at the row's own `block_height` must be
+    // used, with no walk-back (JarsMerge's block is never locked).
+    let d = tempfile::tempdir().unwrap();
+    let dbp = build_fixture_db(d.path());
+    let c = db::open_write(&dbp).unwrap();
+
+    c.execute(
+        "INSERT INTO migrations VALUES (300, 190000000, NULL)",
+        duckdb::params![],
+    )
+    .unwrap();
+
+    let (slice, timeline) = replay::timeline::load_user(&c, 300).unwrap();
+    let migration = slice.migration.as_ref().unwrap();
+    assert_eq!(migration.block_height, 190_000_000);
+    assert!(migration.raw_account.is_none());
+
+    let migrated_state = r#"{"nonce":1,"jars":{"90d_3apy":{"deposits":[["1700000000000","500000000000000000000"]],"cache":{"updated_at":"1774000000000","interest":"0"},"is_pending_withdraw":false,"claim_remainder":"0"}},"score":{"updated_at":1774000000000,"history":[]},"is_penalty_applied":false,"features":{},"timezone":0}"#;
+    let expected_bytes = account_state_json_to_raw(migrated_state).unwrap();
+    let snap = PreEventStateOnly { pre_event_block_height: 190_000_000, state_json: migrated_state };
+
+    let (raw_account, out_timeline, claimed_adjustment) =
+        apply_block_height_fallback(&snap, &slice, None, timeline);
+
+    assert_eq!(raw_account, Some(expected_bytes));
+    assert_eq!(out_timeline.events.len(), 2, "both events must still be replayed, not dropped");
     assert_eq!(claimed_adjustment, 0);
 }
 

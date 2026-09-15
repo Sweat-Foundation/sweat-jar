@@ -1,7 +1,7 @@
 //! Per-account event slice -> engine [`Timeline`] synthesis.
 
 use anyhow::{Context, Result};
-use duckdb::Connection;
+use duckdb::{Connection, OptionalExt};
 use sweat_jar::replay::engine::{Action, Event, Timeline};
 
 use crate::payload::{parse_event, ParsedEvent};
@@ -28,6 +28,26 @@ pub struct UserSlice {
     /// on-chain side but never on the calculated side, a spurious ~100%
     /// divergence rather than a fixed reconciliation.
     pub first_event_claim_amount: Option<u128>,
+    /// This account's `migrations` table row, if the export's
+    /// `jars_merge_events` recorded a JarsMerge on the old (pre-v2) contract
+    /// for it — the authoritative "this account was invisibly created by an
+    /// `FtMessage::Migrate` within the window" signal, replacing guesswork
+    /// with a direct lookup wherever it's available.
+    pub migration: Option<MigrationRecord>,
+}
+
+/// One row of the `migrations` table — see `db::schema` for how it's built.
+pub struct MigrationRecord {
+    /// Block height of the JarsMerge event on the old contract — always
+    /// strictly after v2's own migrated-state write landed (it's that
+    /// write's cross-contract-call callback), so state fetched here is
+    /// never mid-flight/locked.
+    pub block_height: u64,
+    /// The exact borsh bytes v2's `store_account_raw` wrote, when the export
+    /// captured them (~98% of rows) — use directly, no RPC needed. `None`
+    /// means the export didn't capture them for this account; fetch state at
+    /// `block_height` instead (a single try — no lock/walk-back needed).
+    pub raw_account: Option<Vec<u8>>,
 }
 
 /// Reads every event row for `backend_account_id` and builds a sorted engine
@@ -140,6 +160,20 @@ pub fn load_user(conn: &Connection, backend_account_id: i64) -> Result<(UserSlic
     let first_event_block_height = first_key.and_then(|k| block_heights.get(&k).copied());
     let first_event_claim_amount = first_key.and_then(|k| claim_amounts.get(&k).copied());
 
+    let migration = conn
+        .query_row(
+            "SELECT block_height, raw_account FROM migrations WHERE backend_account_id = ?",
+            duckdb::params![backend_account_id],
+            |r| {
+                Ok(MigrationRecord {
+                    block_height: r.get::<_, i64>(0)? as u64,
+                    raw_account: r.get::<_, Option<Vec<u8>>>(1)?,
+                })
+            },
+        )
+        .optional()
+        .context("query migrations table")?;
+
     Ok((
         UserSlice {
             backend_account_id,
@@ -149,6 +183,7 @@ pub fn load_user(conn: &Connection, backend_account_id: i64) -> Result<(UserSlic
             onchain_claimed,
             first_event_block_height,
             first_event_claim_amount,
+            migration,
         },
         timeline,
     ))

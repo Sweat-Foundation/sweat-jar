@@ -67,7 +67,26 @@ pub fn build_db(conn: &mut Connection, opts: &BuildOpts) -> Result<Vec<(String, 
     ))
     .context("insert events")?;
 
-    // 3. meta + row counts.
+    // 3. migrations (optional — a source without `jars_merge_events/` just
+    // skips this; `apply_block_height_fallback`'s walk-back covers the gap).
+    let migrations_dir = opts.source_dir.join("jars_merge_events");
+    let migrations_ingested = if migrations_dir.is_dir() {
+        let mg_glob = glob(opts.source_dir, "jars_merge_events");
+        conn.execute_batch(&format!(
+            "INSERT INTO migrations
+             SELECT m.backend_account_id, m.block_height,
+                    CASE WHEN m.migrated_jars_borsh_base64 IS NULL THEN NULL
+                         ELSE from_base64(m.migrated_jars_borsh_base64) END AS raw_account
+             FROM read_parquet('{mg_glob}') m
+             SEMI JOIN accounts USING (backend_account_id);"
+        ))
+        .context("insert migrations")?;
+        true
+    } else {
+        false
+    };
+
+    // 4. meta + row counts.
     let put = |k: &str, v: String| -> Result<()> {
         conn.execute(
             "INSERT INTO meta VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
@@ -84,10 +103,13 @@ pub fn build_db(conn: &mut Connection, opts: &BuildOpts) -> Result<Vec<(String, 
         conn.query_row(&format!("SELECT count(*) FROM {t}"), [], |r| r.get(0))
             .context("count")
     };
-    let counts = vec![
+    let mut counts = vec![
         ("accounts".to_string(), count("accounts")?),
         ("events".to_string(), count("events")?),
     ];
+    if migrations_ingested {
+        counts.push(("migrations".to_string(), count("migrations")?));
+    }
     for (t, n) in &counts {
         put(&format!("{t}_rows"), n.to_string())?;
     }

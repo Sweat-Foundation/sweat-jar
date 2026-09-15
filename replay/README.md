@@ -309,27 +309,45 @@ one found so far):
   same assertion on-chain). `timeline.rs` clamps each increment to
   `min(increment_ts, block_ts)` before replay, so this is already handled and
   doesn't surface as an error.
-- **`Account … is not found in smart contract`** — this account's very first
-  captured event (in `events/`) is a `claim`/`withdraw_all`/`restake`/
-  `record_score`, not a `deposit` — i.e. whatever created its jars isn't one
-  of the 7 event types this export tracks (most likely an `FtMessage::Migrate`
-  transfer from a previous contract version, which writes storage directly
-  via `store_account_raw` and emits no event at all). `deposit` already
-  auto-creates the account (`get_or_create_account_mut`, same as
-  production), so this was **not fixable by "create on deposit"** — there's
-  no deposit event to trigger on.
+- **`Account … is not found in smart contract`** — this account's jars were
+  created by an `FtMessage::Migrate` from the old (pre-v2) contract sometime
+  within the replay window, which writes storage directly via
+  `store_account_raw` and emits no event on the v2 side at all — so it's
+  invisible to the 7 tracked event types no matter which one the account's
+  first captured event happens to be. `deposit` already auto-creates a
+  genuinely fresh account (`get_or_create_account_mut`, same as production),
+  so this was **not fixable by "create on deposit"** for a Deposit-first
+  account either — the account already existed before that Deposit ran.
 
-  Instead of tracking or modeling the invisible creation, `reconcile_user`
-  (via `apply_block_height_fallback`) re-fetches state directly: when an
-  authoritative source (archival RPC) confirms no state at block `H` *and*
-  the account's first action isn't a `Deposit`, it re-queries `get_account`
-  at that first event's own block height. NEAR's view-at-height semantics
-  return state as of right after that block's receipts ran — i.e. already
-  reflecting the invisible creation and the first event's effect — so that
-  leading event is dropped from the timeline and the rest replays against
-  the fetched baseline. This only works with `--archival-rpc-url` (an
-  authoritative source); the local `snapshots` cache can't serve arbitrary
-  heights and this account instead lands on `no_baseline`.
+  The old contract's migration callback (`finalize_migration`, strictly
+  *after* v2's write already landed) does emit an event — `JarsMerge`, on the
+  old contract. A separate export (`jars_merge_events/`, ingested into the
+  `migrations` table — see "`db` schema" below) captures it per account, and
+  `apply_block_height_fallback` checks it **first**, ahead of any guessing:
+  - `migrations.raw_account` present (~98% of rows — the export captured the
+    exact bytes `store_account_raw` wrote) → decode and use directly, **no
+    RPC call at all**.
+  - Otherwise → one archival fetch at `migrations.block_height` (JarsMerge's
+    own block — never mid-flight/locked, since it's a callback that only
+    resolves after the migrated state already landed).
+
+  Only when an account has no `migrations` row at all (a gap in that export,
+  or some other invisible-creation path) does the heuristic **walk-back**
+  kick in as a safety net: query one block before the first tracked event,
+  then two, … up to `MAX_LOCK_WALKBACK_BLOCKS`, skipping any state with a
+  locked jar (`Restake`/`Claim`/`Withdraw`/`WithdrawAll` all lock jars before
+  a promise/callback resolves, so the immediately-preceding block can be a
+  transient mid-flight snapshot of that SAME event — confirmed by tracing a
+  real account this way, `is_pending_withdraw: true` one block before its own
+  Restake's log event, resolving 3 blocks earlier). If an unlocked state is
+  found, the first tracked event replays normally on top of it (not
+  dropped). If the walk-back only ever finds locked or genuinely-empty
+  states, it falls back to the original post-event fetch (the account's
+  first action's own block, which NEAR's view-at-height semantics guarantee
+  already reflects the invisible creation) and drops that leading event.
+  Both the migration-table path and the walk-back require an authoritative
+  source (`--archival-rpc-url`); without one, such an account lands on
+  `no_baseline` instead.
 - **`Not enough funds to restake`** (and the smaller silent `over_tolerance`
   divergences that cluster right after a multi-jar restake) — a multi-jar
   `from` set is replayed as `restake_all`, which is deterministic given
@@ -353,10 +371,20 @@ one found so far):
 
 `replay/src/db/schema.rs`. Tables: `events` (`backend_account_id, ts_ms,
 log_index, block_height, event, role, payload`), `accounts` (`backend_account_id,
-near_account_id, existed_at_start, timezone_ms`), `snapshots`
-(`backend_account_id, state_json`), `meta` (`key, value`), `results` (`run`'s
-output — `backend_account_id` PK, the `reconciliation.csv` columns, plus
-`computed_at`; see [`run`](#run)).
+near_account_id, existed_at_start, timezone_ms`), `migrations`
+(`backend_account_id` PK, `block_height`, `raw_account` — one row per account
+with a `JarsMerge` event on the old contract; see "Known error causes"
+above), `snapshots` (`backend_account_id, state_json`), `meta` (`key,
+value`), `results` (`run`'s output — `backend_account_id` PK, the
+`reconciliation.csv` columns, plus `computed_at`; see [`run`](#run)).
+
+`migrations` is populated from an optional `jars_merge_events/` parquet
+directory alongside `events/`/`accounts/`/`account_timezones/` in the source
+tree — `build-db` skips it silently if absent (falls back to the walk-back
+heuristic for every account). Its `migrated_jars_borsh_base64` column
+(base64 of the exact bytes `store_account_raw` wrote on migration) is
+decoded straight to `migrations.raw_account` at ingest time via DuckDB's
+`from_base64`, so no borsh work happens outside the database.
 
 ## Known divergences / limitations
 

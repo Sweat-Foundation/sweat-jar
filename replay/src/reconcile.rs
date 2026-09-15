@@ -109,23 +109,32 @@ const MAX_LOCK_WALKBACK_BLOCKS: u64 = 6;
 
 /// Confirmed-empty at block H (an authoritative source said so) — but that
 /// doesn't mean the account was still empty right before its first *tracked*
-/// event. Something invisible to the 7 tracked event types (most commonly an
-/// `FtMessage::Migrate` from a previous contract version, which writes
-/// storage directly and emits no event at all) can create an account
-/// anywhere within the replay window, including well before an otherwise
-/// perfectly ordinary first event that would normally be trusted to be the
-/// account's genesis.
+/// event. Something invisible to the 7 tracked event types (almost always an
+/// `FtMessage::Migrate` from the old (pre-v2) contract, which writes storage
+/// directly via `store_account_raw` and emits no event on the v2 side) can
+/// create an account anywhere within the replay window, including well
+/// before an otherwise perfectly ordinary first event that would normally be
+/// trusted to be the account's genesis.
 ///
-/// `Restake`/`Claim`/`Withdraw`/`WithdrawAll` all lock the jars they touch
-/// before sending a transfer promise, and only unlock (and emit their event)
-/// from the *callback* — one or more blocks later. So "one block before the
-/// first event's own block" can land mid-operation (jars still marked
-/// `is_locked`), a transient snapshot of that SAME event, not a genuinely
-/// separate prior state (confirmed by tracing a real account this way:
-/// `is_pending_withdraw: true` on the jars a Restake was about to consume,
-/// resolving to the true pre-restake state only 3 blocks earlier). `Deposit`
-/// and the score/feature actions never lock anything, so they're always safe
-/// on the first try.
+/// The old contract's own migration callback DOES emit an event —
+/// `JarsMerge`, on the OLD contract, strictly after v2's write already
+/// landed (`db::schema`'s `migrations` table, populated from a separate
+/// `jars_merge_events` export). When present, `UserSlice::migration` is an
+/// exact, direct answer — no guessing needed — and is checked first, before
+/// either heuristic below.
+///
+/// The two walk-back cases exist as a safety net for accounts the migration
+/// export doesn't cover (or never had a `JarsMerge` at all, if some other
+/// invisible-creation path exists). `Restake`/`Claim`/`Withdraw`/`WithdrawAll`
+/// all lock the jars they touch before sending a transfer promise, and only
+/// unlock (and emit their event) from the *callback* — one or more blocks
+/// later. So "one block before the first event's own block" can land
+/// mid-operation (jars still marked `is_locked`), a transient snapshot of
+/// that SAME event, not a genuinely separate prior state (confirmed by
+/// tracing a real account this way: `is_pending_withdraw: true` on the jars
+/// a Restake was about to consume, resolving to the true pre-restake state
+/// only 3 blocks earlier). `Deposit` and the score/feature actions never
+/// lock anything, so they're always safe on the first try.
 ///
 /// Two cases, checked in order:
 ///
@@ -161,6 +170,23 @@ pub fn apply_block_height_fallback(
     if raw_account.is_some() || !snapshot.is_authoritative() {
         return (raw_account, timeline, 0);
     }
+
+    // Priority path: a direct JarsMerge record from the old contract beats
+    // any heuristic guessing below — see `UserSlice::migration`'s docs. No
+    // RPC at all when the export captured the migrated bytes (~98% of
+    // cases); a single fetch at the JarsMerge block otherwise (never
+    // locked, so no walk-back needed there either). Only falls through to
+    // the heuristic walk-back if there's no migration record, or that
+    // single fetch itself failed (an RPC hiccup, not "genuinely no data").
+    if let Some(migration) = &slice.migration {
+        if let Some(bytes) = &migration.raw_account {
+            return (Some(bytes.clone()), timeline, 0);
+        }
+        if let Some(bytes) = call_snapshot_safely(snapshot, &slice.near_account_id, migration.block_height) {
+            return (Some(bytes), timeline, 0);
+        }
+    }
+
     let Some(block_height) = slice.first_event_block_height else {
         return (raw_account, timeline, 0);
     };

@@ -25,6 +25,22 @@ CREATE TABLE IF NOT EXISTS accounts (
     existed_at_start    BOOLEAN NOT NULL,
     timezone_ms         BIGINT
 );
+CREATE TABLE IF NOT EXISTS migrations (
+    -- One row per account with a JarsMerge event on the OLD (pre-v2)
+    -- contract — the authoritative record of an FtMessage::Migrate that
+    -- invisibly created this account on v2 sometime within the replay
+    -- window (store_account_raw writes storage directly, no v2-side event).
+    -- `block_height` is JarsMerge's own block, on the OLD contract's
+    -- callback, which resolves strictly after v2's write already landed —
+    -- so it's always safe to fetch v2 state there directly, no lock/replay
+    -- ambiguity. `raw_account` is the exact borsh bytes v2's
+    -- store_account_raw wrote (decoded from the export's
+    -- migrated_jars_borsh_base64), when the export captured them (~98% of
+    -- rows) — NULL falls back to a single archival fetch at `block_height`.
+    backend_account_id  BIGINT PRIMARY KEY,
+    block_height        BIGINT NOT NULL,
+    raw_account         BLOB
+);
 CREATE TABLE IF NOT EXISTS snapshots (
     backend_account_id  BIGINT PRIMARY KEY,
     state_json          VARCHAR NOT NULL
