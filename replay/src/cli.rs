@@ -21,6 +21,12 @@ pub enum Cmd {
         accounts: Option<PathBuf>,
         #[arg(long)]
         sample: Option<usize>,
+        /// DuckDB `memory_limit` (e.g. "6GB") for the ingest connection. Left
+        /// unset, DuckDB defaults to ~80% of system RAM, which can OOM a
+        /// memory-constrained build host on the `events` insert; capping it
+        /// makes DuckDB spill to `temp_directory` (next to `--db`) instead.
+        #[arg(long)]
+        memory_limit: Option<String>,
     },
     /// Reconcile the worklist, upserting each result into the `results` table
     /// in `--db`. Resumable: an account already in `results` is skipped on a

@@ -60,13 +60,23 @@ binary needed.
 ### `build-db`
 
 ```
-replay build-db --db x.duckdb --source test_data/interest_replay [--accounts file] [--sample N]
+replay build-db --db x.duckdb --source test_data/interest_replay [--accounts file] [--sample N] [--memory-limit 6GB]
 ```
 
 Builds a sorted `.duckdb` with `events`, `accounts`, `snapshots`, `meta` (and
 `migrations` if `jars_merge_events/` is present). `--accounts <file>` keeps
 only the listed `backend_account_id`s (one integer/line, `#` comments OK);
 `--sample N` keeps only the first `N`. `--accounts` beats `--sample`.
+
+The three `INSERT..SELECT` batches (accounts, events, migrations) print no
+progress of their own, so `build-db` enables DuckDB's built-in progress bar
+(`PRAGMA enable_progress_bar`) — expect a live `%` on stderr per batch on a
+job that otherwise runs silent for minutes. It also always points DuckDB's
+`temp_directory` at `<db>.tmp` so a big `events` join/sort spills to disk
+instead of growing unbounded in RAM; `--memory-limit` (e.g. `6GB`) caps how
+much RAM DuckDB uses before it spills there — worth setting on a
+memory-constrained build host (left unset, DuckDB defaults to ~80% of system
+RAM, which is what caused an OOM on a small VM before this flag existed).
 
 ### `run`
 

@@ -33,6 +33,7 @@ fi
 build_db_args=(--db "$DB" --source "$SOURCE")
 [ -n "${REPLAY_SAMPLE:-}" ] && build_db_args+=(--sample "$REPLAY_SAMPLE")
 [ -n "${REPLAY_ACCOUNTS:-}" ] && build_db_args+=(--accounts "$REPLAY_ACCOUNTS")
+[ -n "${REPLAY_MEMORY_LIMIT:-}" ] && build_db_args+=(--memory-limit "$REPLAY_MEMORY_LIMIT")
 
 if [ ! -f "$DB" ] || [ "${REPLAY_REBUILD_DB:-0}" = "1" ]; then
     echo "==> build-db ${build_db_args[*]}"

@@ -125,6 +125,7 @@ FastNEAR's free tier only if you don't set a key.
 | `REPLAY_THREADS` | all cores | worker threads for `run` |
 | `REPLAY_SAMPLE` | — | `build-db`/`run --sample N` |
 | `REPLAY_ACCOUNTS` | — | path (inside `/data`) to a `build-db`/`run --accounts` id list |
+| `REPLAY_MEMORY_LIMIT` | — | `build-db --memory-limit` (e.g. `6GB`) — caps DuckDB's RAM use during the ingest, spilling to `<db>.tmp` instead; see the RAM row above and the main `replay/README.md` |
 | `REPLAY_SHARD` | — | `run --shard i/n`, for splitting across multiple machines/containers |
 | `REPLAY_ARCHIVAL` | `1` | set to `0` to read the local `snapshots` table instead of live archival lookups |
 | `REPLAY_ARCHIVAL_RPC_URL` | FastNEAR public endpoint | override the archival RPC |
