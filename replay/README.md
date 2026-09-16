@@ -1,43 +1,61 @@
 # `replay` — per-account yield reconciliation
 
-## Purpose
-
-`replay` replays each affected account's **exhaustive on-chain event stream**
-against the local contract engine and compares the **replayed total claim**
-against the **on-chain total claim**. It emits one CSV row per account with the
-signed delta so accounts whose interest math diverges can be found.
-
-This is the population-scale counterpart of the single-account
+Replays each account's **exhaustive on-chain event stream** through the local
+contract engine and compares the **replayed total claim** against the
+**on-chain total claim**, emitting one CSV row per account with the signed
+delta. Population-scale counterpart of the single-account
 `replay_account_history` golden test in `contract/src/replay.rs`.
 
 ## Window
 
 | bound | value | meaning |
 |-------|-------|---------|
-| `H` (start) | `1774017710156` ms | block `190375496` — baseline account state is "as of `H`" |
+| `H` (start) | `1774017710156` ms | block `190375496` — baseline state is "as of `H`" |
 | `T_end` (end) | `1788174657961` ms | end of the replay window |
 
-The bounds live in `replay/src/parse.rs` (`H_MS`, `H_BLOCK`, `T_END_MS`) and are
-written into the `meta` table at build time.
+Defined in `replay/src/parse.rs` (`H_MS`, `H_BLOCK`, `T_END_MS`), written to
+the `meta` table at build time.
 
 ## Input
 
-`test_data/interest_replay/` — gitignored, ~25 GB, three parquet directories:
+`test_data/interest_replay/` — gitignored, ~25 GB, three parquet dirs:
 
 | dir | columns | notes |
 |-----|---------|-------|
-| `events/` | `backend_account_id, block_timestamp_utc, log_index, receipt_status, event, role, payload` | `payload` is a JSON string. Only `receipt_status = 'SUCCESS_VALUE'` rows are ingested. Event types: `record_score`, `claim`, `apply_booster` (role `applied`/`rejected`), `deposit`, `withdraw_all`, `restake`, `set_feature_enabled`. |
+| `events/` | `backend_account_id, block_timestamp_utc, log_index, receipt_status, event, role, payload` | `payload` is JSON. Only `receipt_status = 'SUCCESS_VALUE'` rows are ingested. Events: `record_score`, `claim`, `apply_booster` (role `applied`/`rejected`), `deposit`, `withdraw_all`, `restake`, `set_feature_enabled`. |
 | `accounts/` | `backend_account_id, near_account_id, existed_at_start, created_in_window` | `existed_at_start` accounts need an archival baseline at block `H`. |
-| `account_timezones/` | `backend_account_id, timezone_ms` | authoritative per-account timezone; `NULL` for a handful that never set one. |
+| `account_timezones/` | `backend_account_id, timezone_ms` | authoritative per-account timezone; `NULL` for a few that never set one. |
 
-## Commands
+Optional fourth dir, `jars_merge_events/` (see [`db` schema](#db-schema)).
 
-Build with the **`release-replay`** profile (see [Build/run](#buildrun)):
+## Build
 
 ```sh
 cargo build -p replay --profile release-replay
 BIN=./target/release-replay/replay
 ```
+
+The custom profile exists because `.cargo/config.toml` sets `panic = "abort"`
+on plain `release` (for the contract wasm), which makes `catch_unwind` a
+no-op. `[profile.release-replay]` (root `Cargo.toml`) is `release` +
+`panic = "unwind"` + `debug-assertions = true` (the latter so `require!`
+expands to an unwinding `assert!`, not a nounwind abort).
+
+`replay` depends on `sweat_jar` with the `replay-engine` feature (pulls
+`near-sdk/unit-testing`, host-only) and is not in the workspace
+`default-members`, so plain `cargo build`/`cargo test`/CI are unaffected —
+always build it explicitly with `-p replay`.
+
+Add `--features corrected-score-window` to reconcile against "what should
+have been paid" (current, fixed score-window logic) instead of "what was
+actually paid" (default — reproduces the pre-v4.2.3 bug, see
+[Known divergences](#known-divergences)). Rebuilds `target/release-replay/replay`
+in place; only one mode is available per build.
+
+DuckDB is vendored via the `duckdb` crate's `bundled` feature — no external
+binary needed.
+
+## Commands
 
 ### `build-db`
 
@@ -45,10 +63,10 @@ BIN=./target/release-replay/replay
 replay build-db --db x.duckdb --source test_data/interest_replay [--accounts file] [--sample N]
 ```
 
-Builds a sorted `.duckdb` with the `events`, `accounts`, `snapshots`, and `meta`
-tables. `--accounts <file>` keeps only the listed `backend_account_id`s (one
-integer per line, blank lines and `#` comments ignored); `--sample N` keeps only
-the first `N` accounts. `--accounts` beats `--sample`.
+Builds a sorted `.duckdb` with `events`, `accounts`, `snapshots`, `meta` (and
+`migrations` if `jars_merge_events/` is present). `--accounts <file>` keeps
+only the listed `backend_account_id`s (one integer/line, `#` comments OK);
+`--sample N` keeps only the first `N`. `--accounts` beats `--sample`.
 
 ### `run`
 
@@ -58,81 +76,61 @@ replay run --db x.duckdb [--out reconciliation.csv]
   [--shard i/n] [--accounts file] [--sample N] [--tolerance f] [--force]
 ```
 
-Threaded per-account reconciliation. Workers are named `replay-worker-*`, the DB
-writer `replay-writer`. `--shard i/n` processes only accounts where
-`backend_account_id.rem_euclid(n) == i` (multi-process / multi-machine fan-out
-over one DB). `--tolerance` (default `1e-6`): an `ok` row with `|rel_delta|`
-above it is counted in `over_tolerance`.
+Threaded per-account reconciliation, resumable by default. `--shard i/n`
+processes only accounts where `backend_account_id.rem_euclid(n) == i`
+(fan-out over one DB across processes/machines). `--tolerance` (default
+`1e-6`): an `ok` row with `|rel_delta|` above it counts toward
+`over_tolerance`.
 
 `--archival` fetches **every** account's block-`H` state live from a NEAR
-archival node (`get_account` on `v2.jars.sweat` at block `H_BLOCK`) —
-`existed_at_start` is the export's own classification, not trusted ground
-truth, so it no longer gates the fetch. A `null` response is a complete,
-authoritative answer ("no state at H"), not a gap: the account's first
-`Deposit` in its timeline creates it, exactly like the real contract's
-`get_or_create_account_mut`. `--archival-rpc-url` overrides the endpoint.
-Without `--archival` (the local `snapshots` table, normally unpopulated),
-a missing row for an `existed_at_start` account IS a gap and is marked
-`no_baseline` — that table isn't authoritative the way a live lookup is.
+archival node (`get_account` at `H_BLOCK`) instead of the local `snapshots`
+table — `existed_at_start` is just the export's own classification, not
+trusted, so it no longer gates the fetch. A `null` response is authoritative
+("no state at `H`"), not a gap — the account's first `Deposit` creates it,
+same as the real contract. Without `--archival`, a missing `snapshots` row
+for an `existed_at_start` account is marked `no_baseline` instead.
 
-**`FASTNEAR_API_KEY`** — set it and every archival request goes out with
-`Authorization: Bearer <key>`; unset (or blank) falls back to unauthenticated.
-Worth having: the free tier throttles hard above ~4 concurrent requests, which
-is the main thing capping `--threads` on a full-population run. The key is
-read from the environment only — never a flag, never logged, and never
-included in error messages (those carry the URL only), so it can't leak into
-`results`/CSV output or a shared terminal transcript.
+**`FASTNEAR_API_KEY`** (env only, never a flag/log) adds
+`Authorization: Bearer <key>` to archival requests. Worth having — the free
+tier throttles hard above ~4 concurrent requests, the main cap on
+`--threads` for a full-population run.
 
 ```sh
-export FASTNEAR_API_KEY=...   # keep it out of shell history / committed files
+export FASTNEAR_API_KEY=...   # keep out of shell history / committed files
 replay run --db x.duckdb --archival --threads 16
 ```
 
-**`REPLAY_TIMING=1`** makes `reconcile_user` print one `TIMING account=<id>
-status=<s> load_us=<..> fetch_us=<..> replay_us=<..> total_us=<..>` line per
-account to stderr — a load breakdown (DB load / snapshot fetch / engine
-replay) for sizing a run before committing to it. `replay_us` scales
-linearly with the account's event count (~9ms/event on this crate's
-`release-replay` build — the near-sdk mock's per-call overhead dominates, not
-the interest math); `fetch_us` is the archival RPC round-trip and is roughly
-flat per account (~0.4s on FastNEAR). For a lot of accounts, replay CPU time
-rivals or exceeds the archival fetch — worth measuring on a sample before
-assuming the RPC is the only bottleneck.
+**`REPLAY_TIMING=1`** prints one `TIMING account=<id> status=<s> load_us=<..>
+fetch_us=<..> replay_us=<..> total_us=<..>` line per account to stderr, for
+sizing a run before committing to it. `replay_us` scales ~linearly with
+event count (~9ms/event on this crate's build — near-sdk mock overhead
+dominates, not the interest math); `fetch_us` (archival RPC) is roughly flat
+per account (~0.4s on FastNEAR). For a large population, replay CPU time can
+rival or exceed the archival fetch.
 
-**Tracking a run in progress.** `run` prints three kinds of line to stderr as
-it goes — all visible in real time via `docker logs -f` if you're running it
-remotely (see `replay/docker/README.md`):
+**Progress.** `run` prints to stderr as it goes (all visible via
+`docker logs -f` if running remotely, see `replay/docker/README.md`):
 
-- `ERROR account=<id> error:<msg>` — one line the moment any account's status
-  comes back `error:...` (see "`error:` vs `failure:`" below).
-- `FAILURE account=<id> failure:<msg>` — same, for `failure:...` statuses.
-- `PROGRESS <done>/<total> (<pct>%) ok=<n> error=<n> failure=<n> no_baseline=<n>
-  elapsed=<dur> rate=<n>/s eta=<dur>` — a heartbeat every 30s by default (set
-  `REPLAY_PROGRESS_INTERVAL_SECS`, `0` to disable), plus one final line at
-  100% when the run finishes. `<total>` is this invocation's worklist (already
-  excludes anything `--force` didn't ask to redo), so a resumed run's
-  percentage is progress on what's left, not on the full population.
+- `ERROR account=<id> error:<msg>` — the moment any account's status is
+  `error:...`
+- `FAILURE account=<id> failure:<msg>` — same, for `failure:...`
+- `PROGRESS <done>/<total> (<pct>%) ok=<n> error=<n> failure=<n>
+  no_baseline=<n> elapsed=<dur> rate=<n>/s eta=<dur>` — heartbeat every 30s
+  (`REPLAY_PROGRESS_INTERVAL_SECS`, `0` disables), plus a final line at 100%.
+  `<total>` excludes anything already resumed past, so a resumed run's % is
+  progress on what's left.
 
-Without these lines, both statuses are invisible until the final summary or a
-CSV export.
+You can also read the (already-written) `results` table directly from
+another terminal at any time — DuckDB allows concurrent readers alongside
+one writer — e.g. `duckdb x.duckdb "SELECT status, count(*) FROM results GROUP BY 1"`.
 
-You can also just query the (already-written) `results` table directly from
-another terminal at any time — DuckDB allows concurrent readers alongside the
-one writer — e.g. `duckdb x.duckdb "SELECT status, count(*) FROM results GROUP BY 1"`,
-or run `export-csv` for a point-in-time CSV snapshot without stopping `run`.
-
-**Results live in the database, not just the CSV.** Each `ReconRow` is upserted
-into the `results` table (keyed by `backend_account_id`) as soon as it's
-computed — a crash or a killed process loses at most the row currently in
-flight, never the ones already done. **`run` is resumable by default**: the
-worklist is `accounts` minus whatever's already in `results`, so re-running the
-exact same command after an interruption (or just periodically, e.g. against a
-`--shard`ed worklist run over several sessions) only computes what's still
-missing. Pass `--force` to recompute everyone regardless. `--out`, if given, is
-still written at the end — but it's a full export of `results` (in
-`backend_account_id` order), not just what this invocation computed; a resumed
-run with nothing left to do still (re-)writes a complete, up-to-date CSV. Omit
-`--out` to update only the database and export later with `export-csv`.
+**Resumability.** Each `ReconRow` is upserted into `results` (keyed by
+`backend_account_id`) as soon as computed, so a crash loses at most the row
+in flight. The worklist is `accounts` minus what's already in `results`, so
+re-running the same command after an interruption only computes what's
+missing. `--force` recomputes everyone. `--out`, if given, is a full export
+of `results` written at the end (not just this invocation's work) — omit it
+to update only the DB and export later with `export-csv`.
 
 ### `export-csv`
 
@@ -140,12 +138,9 @@ run with nothing left to do still (re-)writes a complete, up-to-date CSV. Omit
 replay export-csv --db x.duckdb --out reconciliation.csv
 ```
 
-Writes the current `results` table to CSV without recomputing anything —
-re-export after the fact, or after interrupting a `run`. DuckDB locks the file
-for exclusive access while `run` holds it open, so a concurrent `export-csv`
-from another process fails with a lock error; run it after `run` exits (Ctrl-C
-included — the writer thread only holds one row's upsert at a time, so what's
-already committed to `results` is safe to export).
+Writes `results` to CSV without recomputing anything. DuckDB locks the file
+for exclusive access while `run` holds it open, so run this after `run`
+exits (Ctrl-C included — already-committed rows are safe to export).
 
 ### `explain`
 
@@ -153,8 +148,23 @@ already committed to `results` is safe to export).
 replay explain --db x.duckdb --account <backend_account_id> [--archival]
 ```
 
-Per-claim breakdown (calculated vs on-chain) for one account, to trace a non-zero
-`delta`.
+Per-claim breakdown (calculated vs on-chain) for one account, to trace a
+non-zero `delta`.
+
+### `bisect` (debug tool, separate binary)
+
+```
+cargo run -p replay --profile release-replay --bin bisect -- \
+  --db x.duckdb --account <backend_account_id> [--archival-rpc-url URL]
+```
+
+Replays one account event-by-event and compares the in-memory state after
+each event against a live archival `get_account` at that event's own block
+(NEAR's view-at-height semantics guarantee that block already reflects the
+event). Prints the first event where they diverge plus a JSON diff — how the
+double-timezone-shift and rejected-booster bugs (below) were root-caused.
+Always uses the archival RPC; there's no point bisecting against the local
+`snapshots` cache.
 
 ### `fetch-products`
 
@@ -164,35 +174,38 @@ replay fetch-products
 
 Refreshes `test_data/products.json` from mainnet.
 
-## Build/run
+## How the replay works
 
-```sh
-cargo build -p replay --profile release-replay
-# -> target/release-replay/replay
-```
+For each account:
 
-Why the custom profile: `.cargo/config.toml` sets `panic = "abort"` on the plain
-`release` profile (for the contract wasm), which makes `catch_unwind` a no-op —
-the first contract panic would kill the whole run. `[profile.release-replay]` (in
-the root `Cargo.toml`) is `release` + `panic = "unwind"` + `debug-assertions =
-true`. The last is needed so `require!` expands to `assert!` (a plain unwinding
-panic) rather than a nounwind abort.
+1. **Baseline** — with `--archival`, `get_account` at block `H` for every
+   account (`null` = confirmed empty); without it, the local `snapshots`
+   table. If the account is invisibly pre-existing (see
+   [`Account … is not found`](#known-error-causes) below), an
+   `apply_block_height_fallback` step recovers it first.
+2. **Timezone** — set from `account_timezones/` immediately before the
+   account's first score-based jar is created (a deposit/restake into a
+   `ScoreBased`/`TieredScoreBased` product), not upfront. No-op if there's
+   no score jar or the baseline already carries a valid timezone.
+3. **Replay** every event in `(block_timestamp_utc, log_index)` order,
+   mapped to an engine `Action`:
 
-DuckDB is vendored via the `duckdb` crate's `bundled` feature — no external
-binary is needed. (The `duckdb` CLI is only handy for ad-hoc parquet
-exploration.)
+   | event | `Action` |
+   |-------|----------|
+   | `record_score` | `RecordScore` |
+   | `apply_booster` (both roles) | `ApplyBooster` |
+   | `deposit` | `Deposit` |
+   | `withdraw_all` | `WithdrawAll` |
+   | `restake` | `Restake` / `RestakeAll` |
+   | `set_feature_enabled` | `SetIncreasedScoreCap` |
+   | `claim` | `Claim` |
 
-Add `--features corrected-score-window` to reconcile against "what should have
-been paid" (current, fixed score-window logic) instead of "what was actually
-paid" (the default — reproduces the pre-v4.2.3 bug, see Known divergences
-below). It rebuilds `target/release-replay/replay` in place — the two modes
-aren't both available at once from one build; run one, save its output, then
-switch and rerun if you need both.
-
-`replay` depends on `sweat_jar` with the `replay-engine` feature, which pulls
-`near-sdk/unit-testing` — a **host-only** build. `replay` is not in the workspace
-`default-members`, so plain `cargo build` / `cargo test` and CI are unaffected;
-build it explicitly with `-p replay`.
+   A same-block `deposit` + `apply_booster` pair (airdrop with booster)
+   replays as one `Action::AirdropWithBooster`, mirroring the real
+   contract's internal call order. `log_index` is authoritative intra-block
+   order; a score/state/claim rank only breaks further ties between two
+   distinct receipts sharing a timestamp and `log_index`.
+4. Sum the `claim` payload `items` for the on-chain total.
 
 ## `reconciliation.csv`
 
@@ -204,275 +217,112 @@ account_id,near_account_id,calculated_total_claim,actual_total_claim,delta,rel_d
 |--------|---------|
 | `account_id` | = `backend_account_id` |
 | `near_account_id` | on-chain `AccountId` |
-| `calculated_total_claim` | Σ of the amounts returned by each replayed `claim` |
-| `actual_total_claim` | Σ of the `claim` payload `items` recorded on-chain |
-| `delta` | `calculated_total_claim − actual_total_claim` (signed) |
-| `rel_delta` | `delta / actual_total_claim` (`0.0` when actual is `0`) |
-| `n_claims` | number of claims replayed |
+| `calculated_total_claim` | Σ of amounts from replayed `claim`s |
+| `actual_total_claim` | Σ of on-chain `claim` payload `items` |
+| `delta` | `calculated − actual` (signed) |
+| `rel_delta` | `delta / actual` (`0.0` when actual is `0`) |
+| `n_claims` | claims replayed |
 | `status` | `ok` \| `no_baseline` \| `error:<msg>` \| `failure:<msg>` |
 
-`status`: `ok` — replay succeeded from a real baseline; `no_baseline` — replay
-succeeded but the account held jars before `H` and no archival baseline was
-fetched (replayed from empty state; informational). Both `error:<msg>` and
-`failure:<msg>` carry `calculated = 0`, `delta = -actual` — but they mean
-different things and call for different responses:
+`ok` — replayed from a real baseline. `no_baseline` — replayed from empty
+state because the account pre-existed `H` and no archival baseline was
+fetched (informational). `error:<msg>` and `failure:<msg>` both carry
+`calculated = 0, delta = -actual`, but differ:
 
-- **`error:<msg>`** — the fetch succeeded, the engine ran, and the *contract
-  logic itself* panicked given this account's real history (e.g. "Timezone is
-  not set", "Account … is not found", "Not enough funds to restake"). **Not
-  retryable** — rerunning gives the same result every time. See "Known error
-  causes" below for what each one means and whether it's expected.
-- **`failure:<msg>`** — the tool never got a clean read on this account: the
-  archival RPC errored or was unreachable/throttled, or an unexpected panic
-  escaped the engine's own guard (a bug, not a modeled contract panic). **Worth
-  retrying.** `run`'s resumability skips any account already in `results`
-  regardless of status, so a `failure:` row needs an explicit retry —
-  `export-csv`, filter its `failure:` rows to an id list, then
-  `run --force --accounts <that file>` (after fixing connectivity or
-  getting/rotating an archival API key, if these are RPC errors).
+- **`error:<msg>`** — the fetch succeeded and the *contract logic itself*
+  panicked on this account's real history (e.g. "Timezone is not set").
+  **Not retryable** — deterministic. See
+  [Known error causes](#known-error-causes).
+- **`failure:<msg>`** — the tool didn't get a clean read (archival RPC
+  error/throttle, or an unmodeled panic escaping the engine's guard — a bug,
+  not contract behavior). **Worth retrying**: `export-csv`, filter
+  `failure:` rows to an id list, `run --force --accounts <that file>` (after
+  fixing connectivity / rotating the API key).
 
-`run` prints a summary to stdout:
+`run`'s stdout summary:
 
 ```
 processed <n> | ok <n> | error <n> | failure <n> | no_baseline <n> | over_tolerance <n>
 sum_calculated <n> | sum_actual <n>
 ```
 
-## How the replay works
-
-For each account:
-
-1. Load the baseline — with `--archival`, `get_account` at block `H` for every
-   account (`null` = confirmed empty, not a gap); without it, the local
-   `snapshots` table.
-2. Set the authoritative `timezone_ms` from `account_timezones/` (Oracle
-   `set_timezone`) immediately before the account's first score-based jar is
-   created — a deposit or restake into a `ScoreBased`/`TieredScoreBased`
-   product — not upfront; a no-op for accounts with no score jar, and for a
-   baseline that already carries a valid on-chain timezone.
-3. Replay every event in `(block_timestamp_utc, log_index)` order, mapped to an
-   engine `Action`:
-
-   | event | `Action` |
-   |-------|----------|
-   | `record_score` | `RecordScore` |
-   | `apply_booster` (role `applied`) | `ApplyBooster` |
-   | `deposit` | `Deposit` |
-   | `withdraw_all` | `WithdrawAll` |
-   | `restake` | `Restake` / `RestakeAll` |
-   | `set_feature_enabled` | `SetIncreasedScoreCap` |
-   | `claim` | `Claim` |
-
-4. Sum the `claim` payload `items` for the on-chain total.
-
-`log_index` is authoritative intra-block order and always wins ties; a
-score-related/state-changing/claim rank only breaks a further tie between two
-different receipts that land in the same millisecond with the same
-`log_index` (rare — two distinct receipts, so `log_index` alone can't order
-them).
-
 ## Known error causes
 
-Root-caused from real `error:`/`failure:` rows on production data (plus one
-silent `over_tolerance` source, listed first since it was the single largest
-one found so far):
+Causes you may still see — these are expected, not open bugs (the fixed
+causes that used to dominate `error:`/`over_tolerance` rows — rejected
+`apply_booster` discarding, the record_score timezone double-shift, the
+claim timestamp, and airdrop-with-booster ordering — are already fixed in
+the engine, so a fresh run shouldn't hit them):
 
-- **Double-applied timezone shift on `record_score` (fixed)** — the
-  `record_score` event stores each pair's *Local* (timezone-adjusted)
-  timestamp, not the raw UTC the oracle submitted (`ScoreData.score:
-  Vec<(Score, Local)>`, `contract/src/common/event.rs`). The replay fed that
-  Local value straight back into the engine's `record_score` call, which
-  re-applies the account's timezone shift on the way in — double-applying it
-  for every nonzero-timezone account. Whenever a step's real Local timestamp
-  landed within `|timezone|` of local midnight, the double shift pushed it
-  into the wrong calendar day, changing which score tier that day's APY was
-  computed against. Verified against the real contract with a scratch test
-  (`truth` = raw UTC in vs `mirror` = Local fed back as UTC — different
-  `score.history` for the same real-world step) before fixing. `timeline.rs`
-  now subtracts `timezone_ms` from each pair before wrapping it as `UTC`,
-  recovering the raw value the oracle actually submitted. On the 1000-account
-  sample this fixed 37 of 88 `over_tolerance` accounts to an exact
-  `calculated == actual` match; a handful of others improved but didn't fully
-  close (a separate, still-unidentified cause). Two other explanations were
-  investigated and ruled out first: the pre-v4.2.3 `settle_interest`
-  double-shift bug (`replay-engine` already reproduces the historical,
-  unfixed behavior — see `model/src/data/score/mod.rs` — so version skew
-  wasn't the cause; confirmed by running both builds and finding the
-  divergent claims identical in each) and `apply_penalty`/`IncreasedApy`
-  (confirmed via a chain scan: the flag never toggled for the account
-  investigated).
-- **Claim's own embedded timestamp discarded (fixed)** — `claim_total()`
-  uses `env::block_timestamp_ms()` for `now` in every jar's interest
-  calculation, and embeds that exact value into the emitted `claim` event's
-  own `timestamp` field (`ClaimData.timestamp`) — a precise, ground-truth
-  record of what the real contract used. The replay was discarding this
-  field during parsing and using the export's block-level `ts_ms` instead,
-  which lags the real per-receipt execution instant by ~1.2s on average
-  (up to 33s) across the full export (measured over 3.68M claim rows) — the
-  same class of artifact already handled for `record_score`/`apply_booster`,
-  just missed for claims. `payload.rs` now parses and keeps this field;
-  `Action::Claim` carries it and the engine sets mock block time to it
-  before calling `claim_total()`. On the 1000-account sample this took
-  `over_tolerance` from 50 to 43 and made 2 of one investigated account's 7
-  claims exact-match; most of the remaining divergence is still open.
-- **Airdrop-with-booster's internal order (fixed, but doesn't explain the
-  divergence)** — the `airdrop()` contract call runs
-  `settle_interest_before_booster` *before* the jar it's about to create
-  exists, then creates the jar, then applies the booster directly (never
-  through the public `apply_booster()` API, whose own `settle_interest`
-  call would instead run *after* the jar exists). The replay modeled a
-  `deposit` + `apply_booster` pair sharing one on-chain block as two
-  independent top-level actions, getting this internal order backwards.
-  `timeline.rs`'s `merge_airdrop_boosters` now detects the same-block pair
-  (verified ~1:1 against a `receipt_order`-cohort export's
-  `is_deposit_with_booster` flag) and replays it as one
-  `Action::AirdropWithBooster`, mirroring the real internal sequence. A
-  decisive contract-level test proved the ordering does **not** change the
-  final claimed total in the scenario tested (`since_date`'s
-  `max(cache_updated_at, deposit.created_at)` floor absorbs the cache-timing
-  difference) — kept for state-fidelity (nonce, exact `cache.updated_at`
-  match real chain, useful for future bisection work), not because it's
-  confirmed to fix any claim-total divergence.
+- **`Timestamp from future`** — an export artifact: a `record_score`/
+  `apply_booster` increment's own timestamp can trail its block time in the
+  export even though the real call already passed this assertion on-chain.
+  `timeline.rs` clamps each increment to `min(increment_ts, block_ts)`, so
+  this doesn't surface.
+- **`Account … is not found in smart contract`** — the account's jars were
+  created by an `FtMessage::Migrate` from the pre-v2 contract, which writes
+  storage directly (`store_account_raw`) and emits no v2-side event —
+  invisible to all 7 tracked event types. `apply_block_height_fallback`
+  resolves this, in order: (1) the `migrations` table (from
+  `jars_merge_events/`, see [`db` schema](#db-schema)) — decode
+  `raw_account` directly if present (~98% of rows, no RPC), else one
+  archival fetch at the migration's own block; (2) if no `migrations` row
+  exists, walk backward from the account's first tracked event up to
+  `MAX_LOCK_WALKBACK_BLOCKS`, skipping any state with a locked jar
+  (`Restake`/`Claim`/`Withdraw(All)` lock jars mid-flight, so the
+  immediately-preceding block can be a transient snapshot of the *same*
+  event). An unlocked state found this way replays the leading event
+  normally; otherwise it falls back to the event's own post-state block and
+  drops that leading event. Both paths need `--archival-rpc-url`; without
+  one, such an account lands on `no_baseline`.
+- **`Not enough funds to restake`** and small silent `over_tolerance`
+  clusters after a multi-jar restake — `restake_all` is deterministic given
+  accurate state (it recomputes the swept set from replay's own jar state,
+  not an on-chain `from` list), so this isn't information loss: the
+  replay's jar state at that instant can already be a hair off from
+  on-chain (rounding, timezone estimation, an earlier timestamp clamp), and
+  `restake_all`'s sharp matured-balance cutoff occasionally flips which
+  jars count as matured, producing a one-time composition jump that
+  persists through later claims. Rare (~0.1%–few % of accounts); accepted,
+  not fixed.
 
-  `AirdropWithBooster` also needed its own timezone fix: it originally only
-  tried `set_timezone_before_score_jar` (the feed's `account_timezones`
-  inference, `None` for some accounts), instead of the real `airdrop()`'s
-  `prepare_account_for_airdrop` step (`account.try_set_timezone(ticket.timezone)`,
-  the same hardcoded fallback a standalone `Deposit` already gets through
-  `deposit()`'s own call). Without it, an account with no feed timezone hit
-  `create_airdrop_deposit`'s `update_jar_cache` → `get_interest_calculation_term`,
-  which calls `account.timezone.adjust()` unconditionally (no validity
-  check) — panicking on the invalid default instead of picking up the
-  ticket's timezone the way a real receiver would.
-- **`rejected` `apply_booster` rows discarded (fixed — the single largest
-  divergence source found this session)** — `apply_booster()` unconditionally
-  calls `settle_interest()` *before* checking whether the booster mutation
-  itself will apply or get rejected; the export's `role` column reflects
-  only the latter. Filtering out `role = 'rejected'` rows (as the replay
-  used to) made that real `settle_interest` call — which rolls the 2-day
-  score window via `shift()`/`wipe()` — entirely invisible. Because
-  `shift()`/`wipe()` don't stamp `updated_at` in this build (intentionally
-  reproducing the pre-v4.2.3 bug), skipping a rejected booster's roll let a
-  *later* `record_score` see the same `days_since_last_update` gap and roll
-  the window a **second** time on the real chain while the replay only
-  rolled it once — leaving stale accumulated score the real chain had
-  already dropped. Found via the `bisect` debug tool (`replay/src/bin/bisect.rs`,
-  comparing the engine's intermediate state after each event against live
-  archival state at that event's block) on a real account whose `score.history`
-  diverged by orders of magnitude right after an untracked rejected booster.
-  `payload.rs` now parses `apply_booster` regardless of role; both roles
-  replay identically, letting the engine's own `apply_booster()` decide
-  applied/rejected from its own state while still reproducing the
-  `settle_interest` side effect either way. Impact: 392,261 rejected
-  `apply_booster` rows exist across the full export; on the 1000-account
-  sample this alone took `over_tolerance` from 43 to 7.
-- **`Timestamp from future`** — would fire if a `record_score`/`apply_booster`
-  increment's own timestamp is after the event's block time, which happens in
-  a minority of the export's rows (an export artifact — the increment
-  timestamp disagreeing with its own `block_timestamp_utc`, since only
-  `SUCCESS_VALUE` receipts are ingested and the real call already passed this
-  same assertion on-chain). `timeline.rs` clamps each increment to
-  `min(increment_ts, block_ts)` before replay, so this is already handled and
-  doesn't surface as an error.
-- **`Account … is not found in smart contract`** — this account's jars were
-  created by an `FtMessage::Migrate` from the old (pre-v2) contract sometime
-  within the replay window, which writes storage directly via
-  `store_account_raw` and emits no event on the v2 side at all — so it's
-  invisible to the 7 tracked event types no matter which one the account's
-  first captured event happens to be. `deposit` already auto-creates a
-  genuinely fresh account (`get_or_create_account_mut`, same as production),
-  so this was **not fixable by "create on deposit"** for a Deposit-first
-  account either — the account already existed before that Deposit ran.
+## Known divergences
 
-  The old contract's migration callback (`finalize_migration`, strictly
-  *after* v2's write already landed) does emit an event — `JarsMerge`, on the
-  old contract. A separate export (`jars_merge_events/`, ingested into the
-  `migrations` table — see "`db` schema" below) captures it per account, and
-  `apply_block_height_fallback` checks it **first**, ahead of any guessing:
-  - `migrations.raw_account` present (~98% of rows — the export captured the
-    exact bytes `store_account_raw` wrote) → decode and use directly, **no
-    RPC call at all**.
-  - Otherwise → one archival fetch at `migrations.block_height` (JarsMerge's
-    own block — never mid-flight/locked, since it's a callback that only
-    resolves after the migrated state already landed).
-
-  Only when an account has no `migrations` row at all (a gap in that export,
-  or some other invisible-creation path) does the heuristic **walk-back**
-  kick in as a safety net: query one block before the first tracked event,
-  then two, … up to `MAX_LOCK_WALKBACK_BLOCKS`, skipping any state with a
-  locked jar (`Restake`/`Claim`/`Withdraw`/`WithdrawAll` all lock jars before
-  a promise/callback resolves, so the immediately-preceding block can be a
-  transient mid-flight snapshot of that SAME event — confirmed by tracing a
-  real account this way, `is_pending_withdraw: true` one block before its own
-  Restake's log event, resolving 3 blocks earlier). If an unlocked state is
-  found, the first tracked event replays normally on top of it (not
-  dropped). If the walk-back only ever finds locked or genuinely-empty
-  states, it falls back to the original post-event fetch (the account's
-  first action's own block, which NEAR's view-at-height semantics guarantee
-  already reflects the invisible creation) and drops that leading event.
-  Both the migration-table path and the walk-back require an authoritative
-  source (`--archival-rpc-url`); without one, such an account lands on
-  `no_baseline` instead.
-- **`Not enough funds to restake`** (and the smaller silent `over_tolerance`
-  divergences that cluster right after a multi-jar restake) — a multi-jar
-  `from` set is replayed as `restake_all`, which is deterministic given
-  accurate state: it doesn't consult the on-chain `from` list at all, it
-  recomputes the swept set fresh from the replay's own jar state (deposits +
-  timestamps vs. product terms), exactly like the real contract call. So this
-  isn't an information-loss problem — the divergence is that the replay's
-  jar state at that exact instant can already be a hair off from the real
-  on-chain state (accumulated interest-rounding, timezone estimation, an
-  increment-timestamp clamp earlier in the account's history — the usual
-  small `over_tolerance` sources). Because `restake_all`'s matured-balance
-  cutoff is a sharp boundary, that small prior drift can occasionally flip
-  which jars count as matured or how much of one is liquid at that instant,
-  producing a one-time jump in the `into` jar's composition that then
-  persists through later claims — rather than growing further on its own.
-  Rare (~0.1%-few % of accounts in samples, one restake event each); accepted,
-  not fixed (would need bit-exact interest/timezone reproduction to close
-  entirely).
+- The engine runs **current** contract code (window spans v4.1.0–4.2.2), so
+  version-specific historical behavior isn't reproduced — **except** the
+  dominant one: `AccountScore::shift()`/`wipe()` are `replay-engine`-
+  conditional (`model/src/data/score/mod.rs`) to intentionally revert the
+  v4.2.3 fix that stamps `score.updated_at` when `settle_interest` rolls the
+  window, because the whole window predates that fix and every historical
+  claim racing the oracle's daily `record_score` lost a day of accrual
+  on-chain. The golden regression (`contract/src/replay/mod.rs`) pins a
+  separate total per build config accordingly.
+- `restake` with a multi-jar `from` set replays as `restake_all` with the
+  exact `restaked` amount — the rest of the matured principal is withdrawn,
+  which can differ from a genuine single-jar restake.
+- `reconcile_user` wraps `run_timeline` in its own `catch_unwind` (the
+  near-sdk unit-test mock can let a second panic escape the engine's
+  internal guard); such accounts land on `failure:`, not `error:`.
 
 ## `db` schema
 
-`replay/src/db/schema.rs`. Tables: `events` (`backend_account_id, ts_ms,
-log_index, block_height, event, role, payload`), `accounts` (`backend_account_id,
-near_account_id, existed_at_start, timezone_ms`), `migrations`
-(`backend_account_id` PK, `block_height`, `raw_account` — one row per account
-with a `JarsMerge` event on the old contract; see "Known error causes"
-above), `snapshots` (`backend_account_id, state_json`), `meta` (`key,
-value`), `results` (`run`'s output — `backend_account_id` PK, the
-`reconciliation.csv` columns, plus `computed_at`; see [`run`](#run)).
+`replay/src/db/schema.rs`.
 
-`migrations` is populated from an optional `jars_merge_events/` parquet
-directory alongside `events/`/`accounts/`/`account_timezones/` in the source
-tree — `build-db` skips it silently if absent (falls back to the walk-back
-heuristic for every account). Its `migrated_jars_borsh_base64` column
-(base64 of the exact bytes `store_account_raw` wrote on migration) is
-decoded straight to `migrations.raw_account` at ingest time via DuckDB's
-`from_base64`, so no borsh work happens outside the database.
+| table | key columns |
+|-------|-------------|
+| `events` | `backend_account_id, ts_ms, log_index, block_height, event, role, payload` |
+| `accounts` | `backend_account_id, near_account_id, existed_at_start, timezone_ms` |
+| `migrations` | `backend_account_id` (PK), `block_height`, `raw_account` — one row per account with a `JarsMerge` event on the old contract |
+| `snapshots` | `backend_account_id, state_json` |
+| `meta` | `key, value` |
+| `results` | `run`'s output — `backend_account_id` (PK) + the `reconciliation.csv` columns + `computed_at` |
 
-## Known divergences / limitations
-
-- The engine runs **current** contract code; the window spans contract versions
-  4.1.0–4.2.2, so version-specific historical behavior is not reproduced —
-  **except** the one instance that turned out to dominate reconciliation error:
-  `AccountScore::shift()`/`wipe()` are `replay-engine`-conditional (see
-  `model/src/data/score/mod.rs`) to intentionally revert the v4.2.3 fix
-  (`stamp score.updated_at when settle_interest rolls the window`), because
-  the entire replay window predates that fix and every historical claim that
-  raced the oracle's daily `record_score` lost a day of score accrual
-  on-chain. The golden regression (`contract/src/replay/mod.rs`) pins a
-  separate total for each build config accordingly.
-- `restake` with a multi-jar `from` set is replayed as `restake_all` with the
-  exact `restaked` amount — the rest of the account's matured principal is
-  withdrawn, which can differ from a genuine single-jar restake.
-- `apply_booster` rows with `role = rejected` are ignored (they had no on-chain
-  effect).
-- `reconcile_user` wraps `run_timeline` in its own `catch_unwind`: the near-sdk
-  unit-test mock can let a second panic on one worker thread escape the
-  engine's internal guard; the wrapper turns that account into a `failure:`
-  row (a genuine bug, not a modeled contract panic — see "`error:` vs
-  `failure:`" above) rather than killing the worker.
+`migrations` is populated from an optional `jars_merge_events/` parquet dir
+alongside `events/`/`accounts/`/`account_timezones/`; `build-db` skips it
+silently if absent (falls back to the walk-back heuristic for every
+account). Its `migrated_jars_borsh_base64` column is decoded straight to
+`migrations.raw_account` at ingest via DuckDB's `from_base64` — no borsh
+work outside the database.
 
 ## Testing
 
@@ -480,7 +330,7 @@ decoded straight to `migrations.raw_account` at ingest time via DuckDB's
 cargo test -p replay --profile release-replay
 ```
 
-The single-account golden regression lives separately:
+Single-account golden regression (separate):
 
 ```sh
 cargo test -p sweat_jar --features replay-engine replay_account_history
@@ -488,9 +338,9 @@ cargo test -p sweat_jar --features replay-engine replay_account_history
 
 ## Running on another machine
 
-For a long `--archival` run without tying up your own laptop: `replay/docker/`
-has a `Dockerfile`, an entrypoint that wraps the whole `build-db`-then-`run`
-pipeline behind environment variables, and a `run.sh` script to build and
-launch it. Machine sizing (CPU/RAM/disk/network — building needs ~8 GB RAM,
-the full dataset is ~24 GB, a full run without an API key takes about a
-week) and the full workflow are in `replay/docker/README.md`.
+`replay/docker/` has a `Dockerfile`, an entrypoint wrapping the whole
+`build-db`-then-`run` pipeline behind env vars, and a `run.sh` to build and
+launch it — for a long `--archival` run without tying up your own laptop.
+Machine sizing (building needs ~8 GB RAM, the dataset is ~24 GB, a full run
+without an API key takes about a week) and the full workflow are in
+`replay/docker/README.md`.
