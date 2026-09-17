@@ -152,7 +152,17 @@ pub fn run(opts: &RunOpts) -> Result<RunSummary> {
     };
     let queue = Arc::new(Mutex::new(worklist.into_iter()));
 
-    let (tx, rx) = mpsc::channel::<ReconRow>();
+    // Bounded, not `mpsc::channel`: the writer commits one row at a time to
+    // DuckDB, so it's normally the slow side and an unbounded channel would
+    // just be backpressure-free buffering. Network latency (~0.4s/account
+    // against a healthy archival RPC) usually keeps producers slow enough
+    // that this never mattered -- until a bad/rate-limited API key made every
+    // `get_account` fail instantly, removing that natural throttle: workers
+    // then produced rows far faster than the writer could drain them, and an
+    // unbounded channel buffered millions of them in RAM until the OOM killer
+    // stepped in. A bound a few rows deep per worker forces workers to block
+    // on `send` instead, capping memory regardless of why the writer is slow.
+    let (tx, rx) = mpsc::sync_channel::<ReconRow>(opts.threads * 16);
     let out_path = opts.out.clone();
     let db_path_for_writer = opts.db.clone();
     let tolerance = opts.tolerance;

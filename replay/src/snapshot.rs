@@ -180,7 +180,18 @@ fn http_post_json(
         }
         match req.send_json(body) {
             Ok(r) => return r.into_json().context("decode RPC response body"),
-            // A 4xx is a bug on our side (bad request shape) — don't retry it.
+            // 429 is a rate limit, not a malformed request — retry it like any
+            // transient error instead of bailing immediately (a bad key/expired
+            // key otherwise floods the worklist with instant `failure:` rows
+            // and, worse, floods the writer's channel just as fast — see
+            // run.rs's bounded channel comment).
+            Err(ureq::Error::Status(429, _)) => {
+                last = Some("HTTP 429".to_string());
+                if attempt + 1 < attempts {
+                    std::thread::sleep(std::time::Duration::from_millis(1000 * (attempt + 1)));
+                }
+            }
+            // Any other 4xx is a bug on our side (bad request shape) — don't retry it.
             Err(ureq::Error::Status(code, _)) if (400..500).contains(&code) => {
                 anyhow::bail!("RPC POST to {url} rejected with HTTP {code}");
             }
