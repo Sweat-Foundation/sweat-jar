@@ -13,7 +13,7 @@ use sweat_jar_model::{
     TokenAmount,
 };
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "replay-engine")))]
 use crate::{common::assertions::assert_gas, feature::ft_interface::FungibleTokenInterface};
 use crate::{
     common::{
@@ -27,7 +27,7 @@ use crate::{
 /// scales with jar count, so it must stay within measured territory.
 pub(super) const MAX_JARS_PER_CLAIM: usize = 200;
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "replay-engine")))]
 #[mutants::skip] // Covered by integration tests
 mod gas {
     use near_sdk::Gas;
@@ -47,6 +47,7 @@ mod gas {
 }
 
 #[ext_contract(ext_self)]
+#[cfg_attr(all(feature = "replay-engine", not(test)), allow(dead_code))]
 pub trait ClaimCallbacks {
     fn after_claim(
         &mut self,
@@ -136,7 +137,7 @@ pub(super) fn claim_rollback(account: &Account, rollback_jars: HashMap<ProductId
 }
 
 impl Contract {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "replay-engine"))]
     fn claim_interest(
         &mut self,
         account_id: &AccountId,
@@ -156,7 +157,7 @@ impl Contract {
         ))
     }
 
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "replay-engine")))]
     #[mutants::skip] // Covered by integration tests
     fn claim_interest(
         &mut self,
@@ -243,7 +244,7 @@ impl ClaimCallbacks for Contract {
     }
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "replay-engine")))]
 #[mutants::skip] // Covered by integration tests
 fn after_claim_call(
     account_id: AccountId,

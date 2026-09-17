@@ -1,7 +1,9 @@
 use near_sdk::{
     json_types::{Base64VecU8, U128},
-    log, near, serde_json, AccountId,
+    near, AccountId,
 };
+#[cfg(not(all(feature = "replay-engine", not(test))))]
+use near_sdk::{log, serde_json};
 use sweat_jar_model::{
     data::{
         account::features::Feature,
@@ -12,6 +14,7 @@ use sweat_jar_model::{
 
 #[cfg(test)]
 use super::env::test_env_ext;
+#[cfg(not(all(feature = "replay-engine", not(test))))]
 use crate::{env, PACKAGE_NAME, VERSION};
 
 #[derive(Debug, Clone)]
@@ -39,6 +42,7 @@ pub enum EventKind {
     ApplyBooster(ApplyBoosterData),
 }
 
+#[cfg(not(all(feature = "replay-engine", not(test))))]
 #[derive(Debug)]
 #[near(serializers=[json])]
 struct SweatJarEvent {
@@ -190,6 +194,7 @@ pub struct ApplyBoosterData {
     pub score: Score,
 }
 
+#[cfg(not(all(feature = "replay-engine", not(test))))]
 impl From<EventKind> for SweatJarEvent {
     fn from(event_kind: EventKind) -> Self {
         Self {
@@ -201,7 +206,7 @@ impl From<EventKind> for SweatJarEvent {
 }
 
 #[mutants::skip]
-#[cfg(not(test))]
+#[cfg(all(not(test), not(feature = "replay-engine")))]
 pub(crate) fn emit(event: EventKind) {
     log!("{}", SweatJarEvent::from(event).to_json_event_string());
 }
@@ -209,7 +214,6 @@ pub(crate) fn emit(event: EventKind) {
 #[mutants::skip]
 #[cfg(test)]
 pub(crate) fn emit(event: EventKind) {
-    #[cfg(test)]
     test_env_ext::store_event(&event);
 
     if test_env_ext::should_log_events() {
@@ -217,6 +221,15 @@ pub(crate) fn emit(event: EventKind) {
     }
 }
 
+#[mutants::skip]
+#[cfg(all(feature = "replay-engine", not(test)))]
+pub(crate) fn emit(_event: EventKind) {
+    // Replay drives millions of users through the contract; event capture
+    // (test_env_ext::store_event) would accumulate unboundedly. The replay
+    // never inspects emitted events.
+}
+
+#[cfg(not(all(feature = "replay-engine", not(test))))]
 impl SweatJarEvent {
     fn to_json_string(&self) -> String {
         serde_json::to_string_pretty(self)

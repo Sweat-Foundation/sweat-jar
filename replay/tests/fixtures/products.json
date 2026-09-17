@@ -1,0 +1,640 @@
+[
+    {
+        "id": "test_locked_1hour_16percent",
+        "cap": [
+            "500000000000000000",
+            "100000000000000000000"
+        ],
+        "terms": {
+            "type": "fixed",
+            "data": {
+                "lockup_term": "3600",
+                "apy": {
+                    "default": [
+                        "16",
+                        2
+                    ]
+                }
+            }
+        },
+        "withdrawal_fee": null,
+        "public_key": "12gNxkoLqmrnZYGZetyTRpKYkyojf1H8CkZZ9OwqtxI=",
+        "is_enabled": false
+    },
+    {
+        "id": "test_fixed_1hour_16percent",
+        "cap": [
+            "500000000000000000",
+            "100000000000000000000"
+        ],
+        "terms": {
+            "type": "fixed",
+            "data": {
+                "lockup_term": "3600000",
+                "apy": {
+                    "default": [
+                        "16",
+                        2
+                    ]
+                }
+            }
+        },
+        "withdrawal_fee": null,
+        "public_key": "12gNxkoLqmrnZYGZetyTRpKYkyojf1H8CkZZ9OwqtxI=",
+        "is_enabled": false
+    },
+    {
+        "id": "90d_3apy",
+        "cap": [
+            "1000000000000000000",
+            "500000000000000000000000"
+        ],
+        "terms": {
+            "type": "fixed",
+            "data": {
+                "lockup_term": "7776000000",
+                "apy": {
+                    "default": [
+                        "3",
+                        2
+                    ]
+                }
+            }
+        },
+        "withdrawal_fee": null,
+        "public_key": "q6Y1P0mMERQMY2m22vwEPIWPi8FrUW6EigWN07670XA=",
+        "is_enabled": true
+    },
+    {
+        "id": "180d_6apy",
+        "cap": [
+            "1000000000000000000",
+            "500000000000000000000000"
+        ],
+        "terms": {
+            "type": "fixed",
+            "data": {
+                "lockup_term": "15552000000",
+                "apy": {
+                    "default": [
+                        "6",
+                        2
+                    ]
+                }
+            }
+        },
+        "withdrawal_fee": null,
+        "public_key": "LpD9Uo+gZylSWBsNifCI//uoZDsYceYcu12KgnS9Mk0=",
+        "is_enabled": true
+    },
+    {
+        "id": "365d_12apy",
+        "cap": [
+            "1000000000000000000",
+            "500000000000000000000000"
+        ],
+        "terms": {
+            "type": "fixed",
+            "data": {
+                "lockup_term": "31536000000",
+                "apy": {
+                    "default": [
+                        "12",
+                        2
+                    ]
+                }
+            }
+        },
+        "withdrawal_fee": null,
+        "public_key": "zzshrYBCLgiUrQ2pslp9BzJ1HWjGCkVjNI+E60UY8eQ=",
+        "is_enabled": true
+    },
+    {
+        "id": "365d_16apy_loyal",
+        "cap": [
+            "1000000000000000000",
+            "500000000000000000000000"
+        ],
+        "terms": {
+            "type": "fixed",
+            "data": {
+                "lockup_term": "31536000000",
+                "apy": {
+                    "default": [
+                        "16",
+                        2
+                    ]
+                }
+            }
+        },
+        "withdrawal_fee": null,
+        "public_key": "L+c6EDCHhI7F9u2p8Mum8kpTRSZXC5f4+cWE6ZMsGDQ=",
+        "is_enabled": false
+    },
+    {
+        "id": "365d_24apy_anniversary",
+        "cap": [
+            "1000000000000000000",
+            "500000000000000000000000"
+        ],
+        "terms": {
+            "type": "fixed",
+            "data": {
+                "lockup_term": "31536000000",
+                "apy": {
+                    "default": [
+                        "24",
+                        2
+                    ]
+                }
+            }
+        },
+        "withdrawal_fee": null,
+        "public_key": "UJA+zZFi6WSzFUcuFLBnvvTsrdMJO8L/dW4qEcUwdjA=",
+        "is_enabled": false
+    },
+    {
+        "id": "test_1day_30apy_premium",
+        "cap": [
+            "500000000000000000",
+            "25000000000000000000"
+        ],
+        "terms": {
+            "type": "fixed",
+            "data": {
+                "lockup_term": "86400000",
+                "apy": {
+                    "default": [
+                        "30",
+                        2
+                    ],
+                    "fallback": [
+                        "10",
+                        2
+                    ]
+                }
+            }
+        },
+        "withdrawal_fee": null,
+        "public_key": "12gNxkoLqmrnZYGZetyTRpKYkyojf1H8CkZZ9OwqtxI=",
+        "is_enabled": true
+    },
+    {
+        "id": "365d_24apy_premium",
+        "cap": [
+            "1000000000000000000",
+            "50000000000000000000000"
+        ],
+        "terms": {
+            "type": "fixed",
+            "data": {
+                "lockup_term": "31536000",
+                "apy": {
+                    "default": [
+                        "24",
+                        2
+                    ],
+                    "fallback": [
+                        "10",
+                        2
+                    ]
+                }
+            }
+        },
+        "withdrawal_fee": null,
+        "public_key": "Gbo5kaM4iY9UEUTdox2eUbZUg7W2xd2znr229KJSNeV9",
+        "is_enabled": false
+    },
+    {
+        "id": "365d_30apy_premium_1",
+        "cap": [
+            "1000000000000000000",
+            "500000000000000000000000"
+        ],
+        "terms": {
+            "type": "fixed",
+            "data": {
+                "lockup_term": "31536000000",
+                "apy": {
+                    "default": [
+                        "24",
+                        2
+                    ],
+                    "fallback": [
+                        "10",
+                        2
+                    ]
+                }
+            }
+        },
+        "withdrawal_fee": null,
+        "public_key": "UJA+zZFi6WSzFUcuFLBnvvTsrdMJO8L/dW4qEcUwdjA=",
+        "is_enabled": true
+    },
+    {
+        "id": "365d_16apy_olympic",
+        "cap": [
+            "1000000000000000000",
+            "500000000000000000000000"
+        ],
+        "terms": {
+            "type": "fixed",
+            "data": {
+                "lockup_term": "31536000000",
+                "apy": {
+                    "default": [
+                        "16",
+                        2
+                    ]
+                }
+            }
+        },
+        "withdrawal_fee": null,
+        "public_key": "12gNxkoLqmrnZYGZetyTRpKYkyojf1H8CkZZ9OwqtxI=",
+        "is_enabled": false
+    },
+    {
+        "id": "test_15min_15apy_restakable",
+        "cap": [
+            "1000000000000000000",
+            "500000000000000000000000"
+        ],
+        "terms": {
+            "type": "fixed",
+            "data": {
+                "lockup_term": "900000",
+                "apy": {
+                    "default": [
+                        "15",
+                        2
+                    ]
+                }
+            }
+        },
+        "withdrawal_fee": null,
+        "public_key": "NHNTuuKtNdstqGuXAZLaXxUgLrt5BxH4qp6aas7v8H4=",
+        "is_enabled": true
+    },
+    {
+        "id": "180d_12apy_titan",
+        "cap": [
+            "5000000000000000000000",
+            "5000000000000000000000000"
+        ],
+        "terms": {
+            "type": "fixed",
+            "data": {
+                "lockup_term": "15552000000",
+                "apy": {
+                    "default": [
+                        "16",
+                        2
+                    ]
+                }
+            }
+        },
+        "withdrawal_fee": null,
+        "public_key": "jCx1iH51ysYfz1aXqdH1N7q9jgHI6PXtTRrv7pfVnOk=",
+        "is_enabled": false
+    },
+    {
+        "id": "180d_12apy_titan2",
+        "cap": [
+            "5000000000000000000000",
+            "5000000000000000000000000"
+        ],
+        "terms": {
+            "type": "fixed",
+            "data": {
+                "lockup_term": "15552000000",
+                "apy": {
+                    "default": [
+                        "12",
+                        2
+                    ]
+                }
+            }
+        },
+        "withdrawal_fee": null,
+        "public_key": "jCx1iH51ysYfz1aXqdH1N7q9jgHI6PXtTRrv7pfVnOk=",
+        "is_enabled": true
+    },
+    {
+        "id": "300d_14apy_legion",
+        "cap": [
+            "500000000000000000000",
+            "500000000000000000000000"
+        ],
+        "terms": {
+            "type": "fixed",
+            "data": {
+                "lockup_term": "25920000000",
+                "apy": {
+                    "default": [
+                        "14",
+                        2
+                    ]
+                }
+            }
+        },
+        "withdrawal_fee": null,
+        "public_key": "UJA+zZFi6WSzFUcuFLBnvvTsrdMJO8L/dW4qEcUwdjA=",
+        "is_enabled": true
+    },
+    {
+        "id": "365d_16apy_summit",
+        "cap": [
+            "100000000000000000000",
+            "500000000000000000000000"
+        ],
+        "terms": {
+            "type": "fixed",
+            "data": {
+                "lockup_term": "31536000000",
+                "apy": {
+                    "default": [
+                        "16",
+                        2
+                    ]
+                }
+            }
+        },
+        "withdrawal_fee": null,
+        "public_key": "12gNxkoLqmrnZYGZetyTRpKYkyojf1H8CkZZ9OwqtxI=",
+        "is_enabled": true
+    },
+    {
+        "id": "150d_14apy_lunar_ny",
+        "cap": [
+            "50000000000000000000",
+            "500000000000000000000000"
+        ],
+        "terms": {
+            "type": "fixed",
+            "data": {
+                "lockup_term": "12960000000",
+                "apy": {
+                    "default": [
+                        "14",
+                        2
+                    ]
+                }
+            }
+        },
+        "withdrawal_fee": null,
+        "public_key": "Sb2nap27ncma7HBxiXwfTfKYs/oJaYBhPd+DUYMC33o=",
+        "is_enabled": true
+    },
+    {
+        "id": "60d_14apy_diwali",
+        "cap": [
+            "50000000000000000000",
+            "500000000000000000000000"
+        ],
+        "terms": {
+            "type": "fixed",
+            "data": {
+                "lockup_term": "5184000000",
+                "apy": {
+                    "default": [
+                        "14",
+                        2
+                    ]
+                }
+            }
+        },
+        "withdrawal_fee": null,
+        "public_key": "UFTm8Fh5aTCrf5s9EY9l+IC0xEV27eOJ13W83v0b0L0=",
+        "is_enabled": true
+    },
+    {
+        "id": "30d_15apy_halloween",
+        "cap": [
+            "50000000000000000000",
+            "500000000000000000000000"
+        ],
+        "terms": {
+            "type": "fixed",
+            "data": {
+                "lockup_term": "2592000000",
+                "apy": {
+                    "default": [
+                        "15",
+                        2
+                    ]
+                }
+            }
+        },
+        "withdrawal_fee": null,
+        "public_key": "3YRTRcVsA7Zg5xT97ALo9MPSUQ9rJUqM/eaumvI4Hso=",
+        "is_enabled": true
+    },
+    {
+        "id": "the_pangea",
+        "cap": [
+            "100000000000000000000",
+            "10000000000000000000000"
+        ],
+        "terms": {
+            "type": "fixed",
+            "data": {
+                "lockup_term": "15552000000",
+                "apy": {
+                    "default": [
+                        "14",
+                        2
+                    ]
+                }
+            }
+        },
+        "withdrawal_fee": null,
+        "public_key": "0kVU/UhYdZJRzJeMECT8AfiUtuTcgj5Ctn99aZwbYG4=",
+        "is_enabled": true
+    },
+    {
+        "id": "steps_1week_18000_score_cap",
+        "cap": [
+            "1000000000000000000",
+            "500000000000000000000000"
+        ],
+        "terms": {
+            "type": "score_based",
+            "data": {
+                "score_cap": 18000,
+                "lockup_term": "604800000"
+            }
+        },
+        "withdrawal_fee": null,
+        "public_key": "iqyaBba7LZH+Yui59riUQb9gre5J25HkctPAsUZHr0A=",
+        "is_enabled": true
+    },
+    {
+        "id": "the_pangea_v2",
+        "cap": [
+            "10000000000000000000",
+            "10000000000000000000000"
+        ],
+        "terms": {
+            "type": "fixed",
+            "data": {
+                "lockup_term": "15552000000",
+                "apy": {
+                    "default": [
+                        "14",
+                        2
+                    ]
+                }
+            }
+        },
+        "withdrawal_fee": null,
+        "public_key": "0kVU/UhYdZJRzJeMECT8AfiUtuTcgj5Ctn99aZwbYG4=",
+        "is_enabled": true
+    },
+    {
+        "id": "the_new_year_2025",
+        "cap": [
+            "25000000000000000000",
+            "500000000000000000000000"
+        ],
+        "terms": {
+            "type": "fixed",
+            "data": {
+                "lockup_term": "31536000000",
+                "apy": {
+                    "default": [
+                        "15",
+                        2
+                    ]
+                }
+            }
+        },
+        "withdrawal_fee": null,
+        "public_key": "sTlsrbN090QkdsIDLXWJ2wBwe3lSqpu+asMCfKAdJKA=",
+        "is_enabled": true
+    },
+    {
+        "id": "steps_365d_20000_score_cap",
+        "cap": [
+            "1000000000000000000",
+            "500000000000000000000000"
+        ],
+        "terms": {
+            "type": "score_based",
+            "data": {
+                "score_cap": 20000,
+                "lockup_term": "31536000000"
+            }
+        },
+        "withdrawal_fee": null,
+        "public_key": "RMc5WrBzz2z2dxxclXYuy/RPslb8X2DCCVYAGV48bhs=",
+        "is_enabled": true
+    },
+    {
+        "id": "365_14apy_sleepagotchi_2",
+        "cap": [
+            "1000",
+            "1000000000000000000000"
+        ],
+        "terms": {
+            "type": "fixed",
+            "data": {
+                "lockup_term": "31536000000",
+                "apy": {
+                    "default": [
+                        "14",
+                        2
+                    ]
+                }
+            }
+        },
+        "withdrawal_fee": null,
+        "public_key": "JQmqTlnnru30ZWzj3evRAGWRGstYeYTIOTCSM3SWlb0=",
+        "is_enabled": true
+    },
+    {
+        "id": "365_14apy_boinkers",
+        "cap": [
+            "1000",
+            "1000000000000000000000"
+        ],
+        "terms": {
+            "type": "fixed",
+            "data": {
+                "lockup_term": "31536000000",
+                "apy": {
+                    "default": [
+                        "14",
+                        2
+                    ]
+                }
+            }
+        },
+        "withdrawal_fee": null,
+        "public_key": "rcy04xDZgUnjXV0eO10ZCyHafSBktiOs/QV29G4BBI0=",
+        "is_enabled": true
+    },
+    {
+        "id": "365d_14apy_the_layer_drone",
+        "cap": [
+            "1000",
+            "1000000000000000000000"
+        ],
+        "terms": {
+            "type": "fixed",
+            "data": {
+                "lockup_term": "31536000000",
+                "apy": {
+                    "default": [
+                        "14",
+                        2
+                    ]
+                }
+            }
+        },
+        "withdrawal_fee": null,
+        "public_key": "rcy04xDZgUnjXV0eO10ZCyHafSBktiOs/QV29G4BBI0=",
+        "is_enabled": true
+    },
+    {
+        "id": "365_14apy_upland",
+        "cap": [
+            "1000",
+            "1000000000000000000000"
+        ],
+        "terms": {
+            "type": "fixed",
+            "data": {
+                "lockup_term": "31536000000",
+                "apy": {
+                    "default": [
+                        "14",
+                        2
+                    ]
+                }
+            }
+        },
+        "withdrawal_fee": null,
+        "public_key": "lfyhlOleGVdS/FB8cTVRbwMx3vPEIir4u/cOOauRUPY=",
+        "is_enabled": true
+    },
+    {
+        "id": "steps_365d_20000_10000_tiered_v1",
+        "cap": [
+            "1000000000000000000",
+            "500000000000000000000000"
+        ],
+        "terms": {
+            "type": "tiered_score_based",
+            "data": {
+                "score_cap": {
+                    "default": 20000,
+                    "fallback": 10000
+                },
+                "lockup_term": "31536000000"
+            }
+        },
+        "withdrawal_fee": null,
+        "public_key": "iUewe07MexEzjnw7qWvnMZAudnB6q3NqVMfnP3jC75Y=",
+        "is_enabled": true
+    }
+]

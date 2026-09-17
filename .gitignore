@@ -50,3 +50,12 @@ mutants.out*
 # Integration-test-featured contract build (make build-integration) — never commit;
 # res/ holds the committed production artifacts.
 /res-integration
+
+# Replay reconciliation data (extracts + small fixtures alike) — kept locally,
+# never committed. replay/tests/fixtures/ (generated at test time) is tracked.
+/test_data/
+/replay.db
+/reconciliation.csv
+
+# Unrelated bug-bounty working notes.
+/issues

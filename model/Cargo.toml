@@ -13,6 +13,13 @@ default = []
 integration-methods = []
 release-api = []
 testing = ["dep:rand"]
+# Host-only: makes AccountScore::shift()/wipe() reproduce the pre-v4.2.3 score
+# window behaviour (see contract/Cargo.toml's `replay-engine` feature doc).
+replay-engine = []
+# Overrides `replay-engine`'s score-window reproduction back to current (fixed)
+# behavior — "what should have been paid" instead of "what was actually paid".
+# No effect without `replay-engine`.
+corrected-score-window = []
 
 [dependencies]
 sweat-jar-primitives = { workspace = true }

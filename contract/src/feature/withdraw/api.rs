@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "replay-engine")))]
 use near_sdk::require;
 use near_sdk::{env::panic_str, ext_contract, near, PromiseOrValue};
 use sweat_jar_model::{
@@ -12,13 +12,13 @@ use sweat_jar_model::{
     TokenAmount,
 };
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "replay-engine")))]
 use crate::common::assertions::assert_gas;
 use crate::common::env::env_ext;
-#[cfg(test)]
+#[cfg(any(test, feature = "replay-engine"))]
 use crate::common::env::test_env_ext;
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "replay-engine")))]
 pub(crate) mod gas {
     use near_sdk::Gas;
 
@@ -55,7 +55,7 @@ impl WithdrawalDto {
         Self { amount, fee }
     }
 
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "replay-engine")))]
     #[mutants::skip] // Covered by integration tests
     pub fn net_amount(&self) -> TokenAmount {
         // A misconfigured/migrated product must fail loudly, not underflow.
@@ -70,7 +70,7 @@ pub(super) struct BulkWithdrawalRequest {
     pub requests: Vec<WithdrawalRequest>,
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "replay-engine")))]
 #[mutants::skip] // Covered by integration tests
 impl BulkWithdrawalRequest {
     fn total_net_amount(&self) -> TokenAmount {
@@ -81,7 +81,7 @@ impl BulkWithdrawalRequest {
     }
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "replay-engine")))]
 use crate::feature::ft_interface::{gas::GAS_FOR_FT_TRANSFER, FungibleTokenInterface};
 use crate::{
     common::event::{emit, EventKind, WithdrawData},
@@ -89,6 +89,7 @@ use crate::{
 };
 
 #[ext_contract(ext_self)]
+#[cfg_attr(all(feature = "replay-engine", not(test)), allow(dead_code))]
 pub(super) trait WithdrawCallbacks {
     fn after_withdraw(&mut self, account_id: AccountId, request: WithdrawalRequest) -> WithdrawView;
 
@@ -275,7 +276,7 @@ impl Contract {
     }
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "replay-engine")))]
 #[mutants::skip] // Covered by integration tests
 impl Contract {
     fn transfer_withdraw(
@@ -318,7 +319,7 @@ impl Contract {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "replay-engine"))]
 impl Contract {
     fn transfer_withdraw(
         &mut self,

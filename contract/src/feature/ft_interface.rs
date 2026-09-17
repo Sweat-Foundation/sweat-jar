@@ -1,4 +1,4 @@
-#![cfg(not(test))]
+#![cfg(not(any(test, feature = "replay-engine")))]
 
 use near_sdk::{near, serde_json, serde_json::json, AccountId, NearToken, Promise};
 use sweat_jar_model::TokenAmount;
@@ -17,7 +17,7 @@ pub(crate) struct FungibleTokenContract {
 }
 
 impl FungibleTokenContract {
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "replay-engine")))]
     fn new(address: AccountId) -> Self {
         Self { address }
     }
@@ -25,7 +25,7 @@ impl FungibleTokenContract {
 
 #[near]
 impl Contract {
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "replay-engine")))]
     pub(crate) fn ft_contract(&self) -> impl FungibleTokenInterface {
         FungibleTokenContract::new(self.token_account_id.clone())
     }

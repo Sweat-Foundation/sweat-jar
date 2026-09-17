@@ -1,0 +1,34 @@
+[package]
+name = "replay"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "replay"
+path = "src/lib.rs"
+
+[[bin]]
+name = "replay"
+path = "src/main.rs"
+
+[features]
+# "What should have been paid" (current score-window logic) instead of "what
+# was actually paid" (default — reproduces the pre-v4.2.3 score-window bug).
+corrected-score-window = ["sweat_jar/corrected-score-window"]
+
+[dependencies]
+sweat_jar = { path = "../contract", features = ["replay-engine"] }
+sweat-jar-model = { workspace = true }
+near-sdk = { workspace = true }
+duckdb = { version = "1.4", features = ["bundled"] }
+csv = "1.3"
+clap = { version = "4.5", features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = "1.0"
+anyhow = { workspace = true }
+ureq = { version = "2.10", features = ["json"] }
+base64 = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
