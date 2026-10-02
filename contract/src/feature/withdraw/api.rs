@@ -6,10 +6,12 @@ use near_sdk::{env::panic_str, ext_contract, near, PromiseOrValue};
 use sweat_jar_model::{
     api::WithdrawApi,
     data::{
-        product::{ProductId, ProductModelApi},
+        jar::JarCompanion,
+        product::{ProductId, ProductModelApi, TermsApi},
         withdraw::{BulkWithdrawView, WithdrawView},
     },
-    TokenAmount,
+    interest::InterestCalculator,
+    Timestamp, TokenAmount,
 };
 
 #[cfg(not(test))]
@@ -24,15 +26,17 @@ pub(crate) mod gas {
 
     /// Value is measured with `measure_after_withdraw_gas`
     /// (`make measure-gas`, integration-tests/tests/measure_gas.rs)
-    /// Average gas for this method call don't exceed 3.4 `TGas`. 4 here just in case.
-    pub(super) const GAS_FOR_AFTER_WITHDRAW: Gas = Gas::from_tgas(4);
+    /// Average gas for this method call don't exceed 3.4 `TGas` without interest claim.
+    /// 6 here to cover interest rollback and the extra `Claim` event.
+    pub(super) const GAS_FOR_AFTER_WITHDRAW: Gas = Gas::from_tgas(6);
 
     pub(crate) const GAS_FOR_AFTER_FEE_WITHDRAW: Gas = Gas::from_tgas(4);
 
     /// Value is measured with `measure_bulk_withdraw_gas`
     /// (`make measure-gas`, integration-tests/tests/measure_gas.rs)
-    /// 10 `TGas` was enough for 200 jars. 15 here just in case.
-    pub(super) const GAS_FOR_BULK_AFTER_WITHDRAW: Gas = Gas::from_tgas(15);
+    /// 10 `TGas` was enough for 200 jars without interest claim.
+    /// 25 here to cover interest rollback snapshots and the extra `Claim` event.
+    pub(super) const GAS_FOR_BULK_AFTER_WITHDRAW: Gas = Gas::from_tgas(25);
 }
 
 #[near(serializers=[json])]
@@ -41,6 +45,34 @@ pub(crate) struct WithdrawalRequest {
     pub product_id: ProductId,
     pub withdrawal: WithdrawalDto,
     pub partition_index: usize,
+    #[serde(default)]
+    pub interest: Option<InterestClaim>,
+}
+
+/// Interest claimed along with the principal. `rollback` restores the jar if the transfer fails.
+#[near(serializers=[json])]
+#[derive(Debug, Clone)]
+pub(crate) struct InterestClaim {
+    pub amount: TokenAmount,
+    pub claimed_at: Timestamp,
+    pub rollback: JarCompanion,
+}
+
+impl WithdrawalRequest {
+    fn interest_amount(&self) -> TokenAmount {
+        self.interest.as_ref().map_or(0, |interest| interest.amount)
+    }
+
+    #[cfg(not(test))]
+    #[mutants::skip] // Covered by integration tests
+    fn transfer_amount(&self) -> TokenAmount {
+        self.withdrawal.net_amount() + self.interest_amount()
+    }
+
+    fn to_view(&self) -> WithdrawView {
+        WithdrawView::new(&self.product_id, self.withdrawal.amount, self.withdrawal.fee)
+            .with_interest(self.interest_amount())
+    }
 }
 
 #[near(serializers=[json])]
@@ -73,18 +105,15 @@ pub(super) struct BulkWithdrawalRequest {
 #[cfg(not(test))]
 #[mutants::skip] // Covered by integration tests
 impl BulkWithdrawalRequest {
-    fn total_net_amount(&self) -> TokenAmount {
-        self.requests
-            .iter()
-            .map(|request| request.withdrawal.net_amount())
-            .sum()
+    fn total_transfer_amount(&self) -> TokenAmount {
+        self.requests.iter().map(WithdrawalRequest::transfer_amount).sum()
     }
 }
 
 #[cfg(not(test))]
 use crate::feature::ft_interface::{gas::GAS_FOR_FT_TRANSFER, FungibleTokenInterface};
 use crate::{
-    common::event::{emit, EventKind, WithdrawData},
+    common::event::{emit, ClaimData, EventKind, WithdrawData},
     env, AccountId, Contract, ContractExt,
 };
 
@@ -103,16 +132,7 @@ impl WithdrawApi for Contract {
         self.get_account_mut(&account_id).get_jar_mut(&product_id).try_lock();
         self.update_jar_cache(&account_id, &product_id);
 
-        let jar = self.get_account(&account_id).get_jar(&product_id);
-        let product = self.get_product(&product_id);
-        let (amount, partition_index) = jar.get_liquid_balance(&product.terms);
-        let fee = product.calculate_fee(amount);
-
-        let request = WithdrawalRequest {
-            product_id,
-            withdrawal: WithdrawalDto::new(amount, fee),
-            partition_index,
-        };
+        let request = self.prepare_withdrawal(&account_id, &product_id, env::block_timestamp_ms());
 
         self.transfer_withdraw(&account_id, request)
     }
@@ -125,10 +145,11 @@ impl WithdrawApi for Contract {
         let mut request = BulkWithdrawalRequest::default();
 
         let product_ids = product_ids.unwrap_or_else(|| self.get_account(&account_id).jars.keys().cloned().collect());
-        let account = self.get_account(&account_id);
+        let now = env::block_timestamp_ms();
 
         for product_id in product_ids {
-            let jar = account
+            let jar = self
+                .get_account(&account_id)
                 .jars
                 .get(&product_id)
                 .unwrap_or_else(|| panic_str(&format!("No jar found for {product_id}")));
@@ -136,15 +157,9 @@ impl WithdrawApi for Contract {
                 continue;
             }
 
-            let product = self.get_product(&product_id);
-            let (amount, partition_index) = jar.get_liquid_balance(&product.terms);
-            let fee = product.calculate_fee(amount);
-
-            request.requests.push(WithdrawalRequest {
-                product_id: product.id,
-                withdrawal: WithdrawalDto::new(amount, fee),
-                partition_index,
-            });
+            request
+                .requests
+                .push(self.prepare_withdrawal(&account_id, &product_id, now));
         }
 
         for request in &request.requests {
@@ -162,33 +177,76 @@ impl WithdrawApi for Contract {
 }
 
 impl Contract {
+    /// Builds a withdrawal request for the jar. If the terms claim interest on withdrawal,
+    /// the interest is claimed right away and rolled back if the transfer fails.
+    fn prepare_withdrawal(
+        &mut self,
+        account_id: &AccountId,
+        product_id: &ProductId,
+        now: Timestamp,
+    ) -> WithdrawalRequest {
+        let product = self.get_product(product_id);
+        let account = self.get_account(account_id);
+        let jar = account.get_jar(product_id);
+
+        let (amount, partition_index) = jar.get_withdrawable_balance(&product.terms);
+        let fee = product.calculate_fee(amount);
+
+        let mut request = WithdrawalRequest {
+            product_id: product_id.clone(),
+            withdrawal: WithdrawalDto::new(amount, fee),
+            partition_index,
+            interest: None,
+        };
+
+        if product.terms.claims_interest_on_withdrawal() {
+            let (interest, remainder) = product.terms.get_interest(account, jar, now);
+
+            if interest > 0 {
+                request.interest = Some(InterestClaim {
+                    amount: interest,
+                    claimed_at: now,
+                    rollback: jar.to_rollback(),
+                });
+
+                self.get_account_mut(account_id)
+                    .get_jar_mut(product_id)
+                    .claim(remainder, now);
+            }
+        }
+
+        request
+    }
+
     pub(super) fn after_withdraw_internal(
         &mut self,
         account_id: AccountId,
         request: WithdrawalRequest,
         is_promise_success: bool,
     ) -> WithdrawView {
-        let account = self.get_account_mut(&account_id);
-        account.get_jar_mut(&request.product_id).unlock();
-
         if !is_promise_success {
+            self.rollback_withdrawal(&account_id, &request);
+
             return WithdrawView::new(&request.product_id, 0, 0);
         }
 
+        self.get_account_mut(&account_id)
+            .get_jar_mut(&request.product_id)
+            .unlock();
         self.clean_up(&account_id, &request);
         self.fee_amount += request.withdrawal.fee;
 
-        let withdrawal_result =
-            WithdrawView::new(&request.product_id, request.withdrawal.amount, request.withdrawal.fee);
+        let withdrawal_result = request.to_view();
 
         emit(EventKind::Withdraw(
-            account_id,
+            account_id.clone(),
             (
-                request.product_id,
+                request.product_id.clone(),
                 withdrawal_result.fee,
                 withdrawal_result.withdrawn_amount,
             ),
         ));
+        emit_interest_claim(account_id, std::slice::from_ref(&request));
 
         withdrawal_result
     }
@@ -205,24 +263,32 @@ impl Contract {
             return BulkWithdrawView::default();
         }
 
-        let result = self.process_bulk_withdrawal_success(&account_id, request);
-        emit(collect_bulk_withdrawal_event_data(account_id, &result));
+        let result = self.process_bulk_withdrawal_success(&account_id, &request);
+        emit(collect_bulk_withdrawal_event_data(account_id.clone(), &result));
+        emit_interest_claim(account_id, &request.requests);
 
         result
     }
 
     fn process_bulk_withdrawal_error(&mut self, account_id: &AccountId, request: BulkWithdrawalRequest) {
-        let account = self.get_account_mut(account_id);
-        for request in request.requests {
-            let jar = account.get_jar_mut(&request.product_id);
-            jar.unlock();
+        for request in &request.requests {
+            self.rollback_withdrawal(account_id, request);
+        }
+    }
+
+    fn rollback_withdrawal(&mut self, account_id: &AccountId, request: &WithdrawalRequest) {
+        let jar = self.get_account_mut(account_id).get_jar_mut(&request.product_id);
+        jar.unlock();
+
+        if let Some(interest) = &request.interest {
+            jar.apply(&interest.rollback);
         }
     }
 
     fn process_bulk_withdrawal_success(
         &mut self,
         account_id: &AccountId,
-        request: BulkWithdrawalRequest,
+        request: &BulkWithdrawalRequest,
     ) -> BulkWithdrawView {
         let mut result = BulkWithdrawView::default();
 
@@ -231,10 +297,11 @@ impl Contract {
                 .get_jar_mut(&request.product_id)
                 .unlock();
 
-            let deposit_withdrawal =
-                WithdrawView::new(&request.product_id, request.withdrawal.amount, request.withdrawal.fee);
+            let deposit_withdrawal = request.to_view();
 
-            result.total_amount.0 += deposit_withdrawal.withdrawn_amount.0;
+            result.principal.0 += deposit_withdrawal.withdrawn_amount.0;
+            result.interest.0 += deposit_withdrawal.interest.0;
+            result.total_amount.0 += deposit_withdrawal.withdrawn_amount.0 + deposit_withdrawal.interest.0;
             result.withdrawals.push(deposit_withdrawal);
         }
 
@@ -263,6 +330,23 @@ fn collect_bulk_withdrawal_event_data(account_id: AccountId, withdrawal_result: 
     EventKind::WithdrawAll(account_id, event_data)
 }
 
+/// Interest withdrawn along with principal is reported as a regular claim.
+fn emit_interest_claim(account_id: AccountId, requests: &[WithdrawalRequest]) {
+    let mut event_data: Option<ClaimData> = None;
+
+    for request in requests {
+        if let Some(interest) = &request.interest {
+            event_data
+                .get_or_insert_with(|| ClaimData::new(interest.claimed_at))
+                .add((request.product_id.clone(), interest.amount.into()));
+        }
+    }
+
+    if let Some(event_data) = event_data {
+        emit(EventKind::Claim(account_id, event_data));
+    }
+}
+
 impl Contract {
     fn clean_up(&mut self, account_id: &AccountId, request: &WithdrawalRequest) {
         let jar = self.get_account_mut(account_id).get_jar_mut(&request.product_id);
@@ -284,7 +368,7 @@ impl Contract {
         request: WithdrawalRequest,
     ) -> PromiseOrValue<WithdrawView> {
         self.ft_contract()
-            .ft_transfer(account_id, request.withdrawal.net_amount(), "withdraw")
+            .ft_transfer(account_id, request.transfer_amount(), "withdraw")
             .then(Self::after_withdraw_call(account_id.clone(), request))
             .into()
     }
@@ -300,7 +384,7 @@ impl Contract {
         );
 
         self.ft_contract()
-            .ft_transfer(account_id, request.total_net_amount(), "bulk_withdraw")
+            .ft_transfer(account_id, request.total_transfer_amount(), "bulk_withdraw")
             .then(Self::after_bulk_withdraw_call(account_id.clone(), request))
             .into()
     }

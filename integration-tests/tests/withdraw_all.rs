@@ -11,7 +11,6 @@ use common::{ft, jar, prepare::prepare_contract, product::RegisterProductCommand
 async fn withdraw_all() -> Result<()> {
     const PRINCIPAL: u128 = 1_000_000;
     const JARS_COUNT: u16 = 500;
-    const BULK_PRINCIPAL: u128 = PRINCIPAL * JARS_COUNT as u128;
 
     common::prepare::init_tracing();
     info!("withdraw all test");
@@ -52,28 +51,26 @@ async fn withdraw_all() -> Result<()> {
     let alice_balance_after = ft::ft_balance_of(&context.ft, context.alice.id()).await?;
     let jar_balance_after = ft::ft_balance_of(&context.ft, context.jar.id()).await?;
 
-    assert_eq!(alice_balance_after - alice_balance, BULK_PRINCIPAL + 2000003);
-    assert_eq!(jar_balance - jar_balance_after, BULK_PRINCIPAL + 2000003);
+    // The 10-minute jar is immature but fixed jars allow early withdrawal.
+    let product_10_min_total = PRINCIPAL + 3;
+    let transferred = withdrawn.total_amount.0;
+    assert_eq!(transferred, withdrawn.principal.0 + withdrawn.interest.0);
 
-    assert_eq!(withdrawn.total_amount.0, product_5_min_total);
+    assert_eq!(withdrawn.principal.0, product_5_min_total + product_10_min_total);
+    assert_eq!(alice_balance_after - alice_balance, transferred);
+    assert_eq!(jar_balance - jar_balance_after, transferred);
 
     assert_eq!(
         withdrawn
             .withdrawals
             .iter()
             .map(|j| j.withdrawn_amount.0)
-            .take(2)
             .collect::<HashSet<_>>(),
-        vec![product_5_min_total, 0].into_iter().collect::<HashSet<_>>()
+        HashSet::from([product_5_min_total, product_10_min_total])
     );
 
     let jars = jar::get_jars_for_account(&context.jar, context.alice.id()).await?;
-
-    assert_eq!(jars.0.get(&product_10_min.id()).unwrap().len(), 1);
-    assert_eq!(
-        jars.get_total_principal_for_product(&product_10_min.id()),
-        PRINCIPAL + 3
-    );
+    assert!(jars.is_empty());
 
     Ok(())
 }

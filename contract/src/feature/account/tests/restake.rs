@@ -90,6 +90,32 @@ fn restake_before_maturity(alice: AccountId, admin: AccountId, product: Product,
 }
 
 #[rstest]
+#[should_panic(expected = "Nothing to restake")]
+fn restake_immature_fixed_jar(
+    alice: AccountId,
+    admin: AccountId,
+    product: Product,
+    #[from(jar)]
+    #[with(vec![(0, 1_000_000)])]
+    alice_jar: Jar,
+) {
+    let mut context = Context::new(admin)
+        .with_products(&[product.clone()])
+        .with_latest_account(&alice, &[(product.id.clone(), alice_jar)]);
+
+    // Early withdrawal of fixed jars must not make immature deposits restakable.
+    context.set_block_timestamp_in_days(100);
+
+    context.switch_account(&alice);
+    let ticket = DepositTicket {
+        product_id: product.id.clone(),
+        valid_until: (MS_IN_YEAR * 10).into(),
+        timezone: None,
+    };
+    context.contract().restake(product.id, ticket, None, None);
+}
+
+#[rstest]
 #[should_panic(expected = "It's not possible to create new jars for this product: the product is disabled.")]
 fn restake_with_disabled_product(alice: AccountId, admin: AccountId, product: Product, #[from(jar)] alice_jar: Jar) {
     let mut context = Context::new(admin.clone())

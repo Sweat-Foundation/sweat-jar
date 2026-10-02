@@ -12,13 +12,20 @@ pub struct WithdrawView {
 
     /// The possible fee that a user must pay for withdrawal, if it's defined by the associated Product.
     pub fee: U128,
+
+    /// Accrued interest claimed and transferred together with the principal.
+    pub interest: U128,
 }
 
 #[derive(Debug, Default)]
 #[near(serializers=[json])]
-// TODO: doc change
 pub struct BulkWithdrawView {
+    /// Total amount transferred to the user: `principal` + `interest`.
     pub total_amount: U128,
+    /// Net principal withdrawn across all jars.
+    pub principal: U128,
+    /// Interest claimed along with the principal across all jars.
+    pub interest: U128,
     pub withdrawals: Vec<WithdrawView>,
 }
 
@@ -31,7 +38,14 @@ impl WithdrawView {
             product_id: product_id.clone(),
             withdrawn_amount: net_amount.into(),
             fee: U128(fee),
+            interest: U128(0),
         }
+    }
+
+    #[must_use]
+    pub fn with_interest(mut self, interest: TokenAmount) -> Self {
+        self.interest = interest.into();
+        self
     }
 }
 
@@ -51,6 +65,7 @@ mod test {
                 product_id: ProductId::new(),
                 withdrawn_amount: U128(1_000_000 - 100),
                 fee: U128(100),
+                interest: U128(0),
             }
         );
     }
