@@ -128,3 +128,72 @@ impl Deposit {
         now - self.created_at > term
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use near_sdk::json_types::U64;
+    use sweat_jar_primitives::UDecimal;
+
+    use super::*;
+    use crate::{
+        data::product::{
+            Apy, FixedProductTerms, FlexibleProductTerms, ScoreBasedProductTerms, TieredScoreBasedProductTerms,
+        },
+        ConfigurableValue, MS_IN_YEAR,
+    };
+
+    fn fixed_terms() -> Terms {
+        Terms::Fixed(FixedProductTerms {
+            lockup_term: U64(MS_IN_YEAR),
+            apy: Apy::Constant(UDecimal::new(12, 2)),
+        })
+    }
+
+    fn jar(deposits: &[(Timestamp, TokenAmount)]) -> Jar {
+        Jar {
+            deposits: deposits
+                .iter()
+                .map(|&(created_at, principal)| Deposit::new(created_at, principal))
+                .collect(),
+            ..Jar::default()
+        }
+    }
+
+    #[test]
+    fn only_fixed_jars_are_withdrawn_early_with_interest() {
+        let flexible = Terms::Flexible(FlexibleProductTerms {
+            apy: Apy::Constant(UDecimal::new(12, 2)),
+        });
+        let score_based = Terms::ScoreBased(ScoreBasedProductTerms {
+            score_cap: 20_000,
+            lockup_term: U64(MS_IN_YEAR),
+        });
+        let tiered_score_based = Terms::TieredScoreBased(TieredScoreBasedProductTerms {
+            score_cap: ConfigurableValue::Constant(20_000),
+            lockup_term: U64(MS_IN_YEAR),
+        });
+
+        assert!(fixed_terms().allows_early_withdrawal());
+        assert!(fixed_terms().claims_interest_on_withdrawal());
+
+        assert!(flexible.allows_early_withdrawal());
+        assert!(!flexible.claims_interest_on_withdrawal());
+
+        for terms in [score_based, tiered_score_based] {
+            assert!(!terms.allows_early_withdrawal());
+            assert!(!terms.claims_interest_on_withdrawal());
+        }
+    }
+
+    #[test]
+    fn withdrawable_balance_of_fixed_jar_includes_immature_deposits() {
+        let jar = jar(&[(0, 100), (MS_IN_YEAR, 200), (2 * MS_IN_YEAR, 300)]);
+
+        assert_eq!((600, 3), jar.get_withdrawable_balance(&fixed_terms()));
+    }
+
+    #[test]
+    fn withdrawable_balance_of_empty_fixed_jar() {
+        assert_eq!((0, 0), jar(&[]).get_withdrawable_balance(&fixed_terms()));
+    }
+}

@@ -18,6 +18,7 @@ use sweat_jar_primitives::UDecimal;
 use crate::{
     common::{
         env::test_env_ext,
+        event::EventKind,
         testing::{accounts::*, expect_panic, Context, TokenUtils, UnwrapPromise},
     },
     feature::{
@@ -760,4 +761,193 @@ impl Context {
             PromiseOrValue::Value(value) => value,
         }
     }
+}
+
+#[rstest]
+fn withdraw_emits_withdraw_and_claim_events(
+    admin: AccountId,
+    alice: AccountId,
+    #[from(product_1_year_12_percent)] product: Product,
+    #[with(vec![(0, 1_000_000)])] jar: Jar,
+) {
+    let mut context = Context::new(admin)
+        .with_products(&[product.clone()])
+        .with_latest_account(&alice, &[(product.id.clone(), jar)]);
+
+    context.set_block_timestamp_in_days(100);
+
+    let withdrawn = context.withdraw(&alice, &product.id);
+    assert_ne!(0, withdrawn.claimed_amount.0);
+
+    let events = context.get_events();
+    assert_eq!(2, events.len());
+
+    let EventKind::Withdraw(_, (product_id, fee, amount)) = &events[0] else {
+        panic!("Expected Withdraw event");
+    };
+    assert_eq!(&product.id, product_id);
+    assert_eq!(0, fee.0);
+    assert_eq!(1_000_000, amount.0);
+
+    let EventKind::Claim(_, claim) = &events[1] else {
+        panic!("Expected Claim event");
+    };
+    assert_eq!(vec![(product.id.clone(), withdrawn.claimed_amount)], claim.items);
+}
+
+#[rstest]
+fn withdraw_without_accrued_interest_emits_no_claim(
+    admin: AccountId,
+    alice: AccountId,
+    #[from(product_1_year_12_percent)] product: Product,
+    #[with(vec![(0, 1_000_000)])] jar: Jar,
+) {
+    let mut context = Context::new(admin)
+        .with_products(&[product.clone()])
+        .with_latest_account(&alice, &[(product.id.clone(), jar)]);
+
+    let withdrawn = context.withdraw(&alice, &product.id);
+    assert_eq!(1_000_000, withdrawn.withdrawn_amount.0);
+    assert_eq!(0, withdrawn.claimed_amount.0);
+
+    let events = context.get_events();
+    assert_eq!(1, events.len());
+    assert!(matches!(events[0], EventKind::Withdraw(..)));
+
+    assert!(context.contract().get_jars_for_account(alice).0.is_empty());
+}
+
+#[rstest]
+fn withdraw_succeeds_after_failed_attempt(
+    admin: AccountId,
+    alice: AccountId,
+    #[from(product_1_year_12_percent)] product: Product,
+    #[with(vec![(0, 1_000_000), (MS_IN_DAY, 3_000_000)])] jar: Jar,
+) {
+    let mut context = Context::new(admin)
+        .with_products(&[product.clone()])
+        .with_latest_account(&alice, &[(product.id.clone(), jar.clone())]);
+
+    context.set_block_timestamp_in_days(100);
+    let interest = context.contract().get_total_interest(alice.clone()).amount;
+
+    test_env_ext::set_test_future_success(false);
+    let failed = context.withdraw(&alice, &product.id);
+    assert_eq!(0, failed.withdrawn_amount.0);
+    assert_eq!(0, failed.claimed_amount.0);
+
+    let restored = context.contract().get_account(&alice).get_jar(&product.id).clone();
+    assert_eq!(jar.deposits, restored.deposits);
+    assert!(!restored.is_locked);
+    assert_eq!(interest, context.contract().get_total_interest(alice.clone()).amount);
+
+    test_env_ext::set_test_future_success(true);
+    let withdrawn = context.withdraw(&alice, &product.id);
+    assert_eq!(jar.total_principal(), withdrawn.withdrawn_amount.0);
+    assert_eq!(interest.total, withdrawn.claimed_amount);
+
+    assert!(context.contract().get_jars_for_account(alice).0.is_empty());
+}
+
+#[rstest]
+fn withdraw_all_fixed_jars_before_maturity(
+    admin: AccountId,
+    alice: AccountId,
+    #[from(product_1_year_12_percent)] product: Product,
+    #[from(product_2_years_10_percent)] another_product: Product,
+    #[from(jar)]
+    #[with(vec![(0, 1_000_000)])]
+    jar: Jar,
+    #[from(jar)]
+    #[with(vec![(0, 2_000_000), (MS_IN_DAY, 500_000)])]
+    another_jar: Jar,
+) {
+    let mut context = Context::new(admin)
+        .with_products(&[product.clone(), another_product.clone()])
+        .with_latest_account(
+            &alice,
+            &[
+                (product.id.clone(), jar.clone()),
+                (another_product.id.clone(), another_jar.clone()),
+            ],
+        );
+
+    context.set_block_timestamp_in_days(100);
+    let interest = context.contract().get_total_interest(alice.clone()).amount;
+
+    let withdrawn = context.withdraw_all(&alice);
+
+    let principal = jar.total_principal() + another_jar.total_principal();
+    assert_eq!(principal, withdrawn.withdrawn_amount.0);
+    assert_eq!(interest.total, withdrawn.claimed_amount);
+
+    assert_eq!(2, withdrawn.withdrawals.len());
+    for withdrawal in &withdrawn.withdrawals {
+        assert_eq!(interest.detailed[&withdrawal.product_id], withdrawal.claimed_amount);
+    }
+
+    let events = context.get_events();
+    assert_eq!(2, events.len());
+
+    let EventKind::WithdrawAll(_, withdrawals) = &events[0] else {
+        panic!("Expected WithdrawAll event");
+    };
+    let event_principal: TokenAmount = withdrawals.iter().map(|(_, _, amount)| amount.0).sum();
+    assert_eq!(principal, event_principal);
+
+    let EventKind::Claim(_, claim) = &events[1] else {
+        panic!("Expected Claim event");
+    };
+    assert_eq!(2, claim.items.len());
+    for (product_id, amount) in &claim.items {
+        assert_eq!(&interest.detailed[product_id], amount);
+    }
+
+    assert!(context.contract().get_jars_for_account(alice).0.is_empty());
+}
+
+#[rstest]
+fn withdraw_all_keeps_immature_step_jar(
+    admin: AccountId,
+    alice: AccountId,
+    #[from(product_1_year_12_percent)] fixed_product: Product,
+    #[from(product_7_days_20_cap_score_based)] step_product: Product,
+    #[from(jar)]
+    #[with(vec![(0, 1_000_000)])]
+    fixed_jar: Jar,
+    #[from(jar)]
+    #[with(vec![(0, 2_000_000)])]
+    step_jar: Jar,
+) {
+    let mut context = Context::new(admin)
+        .with_products(&[fixed_product.clone(), step_product.clone()])
+        .with_latest_account(
+            &alice,
+            &[
+                (fixed_product.id.clone(), fixed_jar.clone()),
+                (step_product.id.clone(), step_jar.clone()),
+            ],
+        );
+    context.contract().get_account_mut(&alice).timezone = Timezone::hour_shift(0);
+
+    context.set_block_timestamp_in_days(3);
+
+    let withdrawn = context.withdraw_all(&alice);
+    assert_eq!(fixed_jar.total_principal(), withdrawn.withdrawn_amount.0);
+    assert_ne!(0, withdrawn.claimed_amount.0);
+
+    let step_withdrawal = withdrawn
+        .withdrawals
+        .iter()
+        .find(|withdrawal| withdrawal.product_id == step_product.id)
+        .unwrap();
+    assert_eq!(0, step_withdrawal.withdrawn_amount.0);
+    assert_eq!(0, step_withdrawal.claimed_amount.0);
+
+    let jars = context.contract().get_jars_for_account(alice);
+    assert_eq!(1, jars.0.len());
+    assert_eq!(
+        step_jar.total_principal(),
+        jars.get_total_principal_for_product(&step_product.id)
+    );
 }
