@@ -2,7 +2,7 @@
   "schema_version": "0.4.0",
   "metadata": {
     "name": "sweat_jar",
-    "version": "4.2.3",
+    "version": "4.3.0",
     "authors": [
       "Sweat Economy"
     ],
@@ -10,7 +10,7 @@
       "compiler": "rustc 1.93.1",
       "builder": "cargo-near cargo-near-build 0.11.3"
     },
-    "wasm_hash": "FyUMGPYGdN4t8TTEtqTsejcZk4QrpEstLH5Ar6t6Ni5k"
+    "wasm_hash": "HDdRoXyjAvWcvXM2nrvJbDNucX8GCShCK7wJfgrHRWkz"
   },
   "body": {
     "functions": [
@@ -1907,11 +1907,22 @@
         "BulkWithdrawView": {
           "type": "object",
           "required": [
+            "interest",
+            "principal",
             "total_amount",
             "withdrawals"
           ],
           "properties": {
+            "interest": {
+              "description": "Interest claimed along with the principal across all jars.",
+              "type": "string"
+            },
+            "principal": {
+              "description": "Net principal withdrawn across all jars.",
+              "type": "string"
+            },
             "total_amount": {
+              "description": "Total amount transferred to the user: `principal` + `interest`.",
               "type": "string"
             },
             "withdrawals": {
@@ -2745,6 +2756,30 @@
             }
           }
         },
+        "InterestClaim": {
+          "description": "Interest claimed along with the principal. `rollback` restores the jar if the transfer fails.",
+          "type": "object",
+          "required": [
+            "amount",
+            "claimed_at",
+            "rollback"
+          ],
+          "properties": {
+            "amount": {
+              "type": "integer",
+              "format": "uint128",
+              "minimum": 0.0
+            },
+            "claimed_at": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "rollback": {
+              "$ref": "#/definitions/JarCompanion"
+            }
+          }
+        },
         "JarCache": {
           "description": "A cached value that stores calculated interest based on the current state of the jar. This cache is updated whenever properties that impact interest calculation change, allowing for efficient interest calculations between state changes.",
           "type": "object",
@@ -3028,11 +3063,22 @@
         "PromiseOrValueBulkWithdrawView": {
           "type": "object",
           "required": [
+            "interest",
+            "principal",
             "total_amount",
             "withdrawals"
           ],
           "properties": {
+            "interest": {
+              "description": "Interest claimed along with the principal across all jars.",
+              "type": "string"
+            },
+            "principal": {
+              "description": "Net principal withdrawn across all jars.",
+              "type": "string"
+            },
             "total_amount": {
+              "description": "Total amount transferred to the user: `principal` + `interest`.",
               "type": "string"
             },
             "withdrawals": {
@@ -3064,12 +3110,17 @@
           "type": "object",
           "required": [
             "fee",
+            "interest",
             "product_id",
             "withdrawn_amount"
           ],
           "properties": {
             "fee": {
               "description": "The possible fee that a user must pay for withdrawal, if it's defined by the associated Product.",
+              "type": "string"
+            },
+            "interest": {
+              "description": "Accrued interest claimed and transferred together with the principal.",
               "type": "string"
             },
             "product_id": {
@@ -3415,12 +3466,17 @@
           "type": "object",
           "required": [
             "fee",
+            "interest",
             "product_id",
             "withdrawn_amount"
           ],
           "properties": {
             "fee": {
               "description": "The possible fee that a user must pay for withdrawal, if it's defined by the associated Product.",
+              "type": "string"
+            },
+            "interest": {
+              "description": "Accrued interest claimed and transferred together with the principal.",
               "type": "string"
             },
             "product_id": {
@@ -3502,6 +3558,17 @@
             "withdrawal"
           ],
           "properties": {
+            "interest": {
+              "default": null,
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/InterestClaim"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "partition_index": {
               "type": "integer",
               "format": "uint",
