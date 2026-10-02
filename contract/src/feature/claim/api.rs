@@ -17,6 +17,7 @@ use sweat_jar_model::{
 use crate::{common::assertions::assert_gas, feature::ft_interface::FungibleTokenInterface};
 use crate::{
     common::{
+        assertions::assert_not_sunset,
         env::env_ext,
         event::{emit, ClaimData, EventKind},
     },
@@ -60,6 +61,7 @@ pub trait ClaimCallbacks {
 #[near]
 impl ClaimApi for Contract {
     fn claim_total(&mut self, detailed: Option<bool>) -> PromiseOrValue<ClaimedAmountView> {
+        assert_not_sunset();
         let account_id = env::predecessor_account_id();
 
         self.settle_interest(&account_id);
