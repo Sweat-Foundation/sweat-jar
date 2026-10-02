@@ -11,7 +11,6 @@ use common::{ft, jar, prepare::prepare_contract, product::RegisterProductCommand
 async fn withdraw_all() -> Result<()> {
     const PRINCIPAL: u128 = 1_000_000;
     const JARS_COUNT: u16 = 500;
-    const BULK_PRINCIPAL: u128 = PRINCIPAL * JARS_COUNT as u128;
 
     common::prepare::init_tracing();
     info!("withdraw all test");
