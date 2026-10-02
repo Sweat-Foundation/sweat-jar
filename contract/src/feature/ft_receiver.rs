@@ -7,6 +7,7 @@ use sweat_jar_model::{
 };
 
 use crate::{
+    common::assertions::assert_not_sunset,
     migration::api::{is_new_or_empty_account, store_account_raw},
     Base64VecU8, Contract, ContractExt, Roles,
 };
@@ -62,6 +63,7 @@ pub struct AirdropStakeMessage {
 impl FungibleTokenReceiver for Contract {
     fn ft_on_transfer(&mut self, sender_id: AccountId, amount: U128, msg: String) -> PromiseOrValue<U128> {
         self.assert_from_ft_contract();
+        assert_not_sunset();
 
         let ft_message: FtMessage = serde_json::from_str(&msg).expect("Unable to deserialize msg");
 

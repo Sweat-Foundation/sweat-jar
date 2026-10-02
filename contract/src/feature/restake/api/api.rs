@@ -17,6 +17,7 @@ use sweat_jar_model::{
 
 use crate::{
     common::{
+        assertions::assert_not_sunset,
         env::env_ext,
         event::{emit, EventKind::Restake, RestakeData},
     },
@@ -130,6 +131,8 @@ impl Contract {
         signature: Option<&Base64VecU8>,
         builder: impl RequestBuilder,
     ) -> PromiseOrValue<()> {
+        assert_not_sunset();
+
         let request = self.prepare_request_safely(ticket, signature, builder);
         let event = Restake(request.account_id.clone(), RestakeData::from(&request));
 
