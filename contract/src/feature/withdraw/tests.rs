@@ -65,7 +65,7 @@ fn withdraw_locked_jar_before_maturity_by_not_owner(
         context.contract().withdraw(product.id.clone());
     });
 
-    assert_eq!(context.withdraw_all(&alice).total_amount.0, 0);
+    assert_eq!(context.withdraw_all(&alice).withdrawn_amount.0, 0);
 }
 
 #[rstest]
@@ -86,7 +86,7 @@ fn withdraw_locked_jar_before_maturity_by_owner(
     context.switch_account(&alice);
 
     assert_eq!(0, context.withdraw(&alice, &product.id).withdrawn_amount.0);
-    assert_eq!(0, context.withdraw_all(&alice).total_amount.0);
+    assert_eq!(0, context.withdraw_all(&alice).withdrawn_amount.0);
 }
 
 #[rstest]
@@ -109,7 +109,7 @@ fn withdraw_locked_jar_after_maturity_by_not_owner(
         context.contract().withdraw(product.id);
     });
 
-    assert_eq!(context.withdraw_all(&alice).total_amount.0, 0);
+    assert_eq!(context.withdraw_all(&alice).withdrawn_amount.0, 0);
 }
 
 #[rstest]
@@ -163,7 +163,7 @@ fn withdraw_flexible_jar_by_owner_full(
 
     let withdrawn_amount = context.withdraw(&alice, &product.id);
     assert_eq!(principal, withdrawn_amount.withdrawn_amount.0);
-    assert_eq!(0, withdrawn_amount.interest.0);
+    assert_eq!(0, withdrawn_amount.claimed_amount.0);
 
     let interest = context.contract().get_total_interest(alice.clone());
     let claimed = context.contract().claim_total(None).unwrap();
@@ -193,7 +193,7 @@ fn withdraw_fixed_jar_after_maturity_with_interest(
 
     let withdrawn = context.withdraw(&alice, &product.id);
     assert_eq!(withdrawn.withdrawn_amount.0, principal);
-    assert_eq!(withdrawn.interest.0, target_interest);
+    assert_eq!(withdrawn.claimed_amount.0, target_interest);
     assert_eq!(withdrawn.fee.0, 0);
 
     assert!(context.contract().get_jars_for_account(alice).0.is_empty());
@@ -218,7 +218,7 @@ fn withdraw_fixed_jar_before_maturity(
     let withdrawn = context.withdraw(&alice, &product.id);
     assert_eq!(withdrawn.withdrawn_amount.0, jar.total_principal() - 100);
     assert_eq!(withdrawn.fee.0, 100);
-    assert_eq!(withdrawn.interest.0, interest);
+    assert_eq!(withdrawn.claimed_amount.0, interest);
 
     assert!(context.contract().get_jars_for_account(alice.clone()).0.is_empty());
     assert_eq!(0, context.contract().get_total_interest(alice).amount.total.0);
@@ -240,7 +240,7 @@ fn withdraw_step_jar_before_maturity_is_not_allowed(
 
     let withdrawn = context.withdraw(&alice, &product.id);
     assert_eq!(withdrawn.withdrawn_amount.0, 0);
-    assert_eq!(withdrawn.interest.0, 0);
+    assert_eq!(withdrawn.claimed_amount.0, 0);
 
     let jar_after = context.contract().get_account(&alice).get_jar(&product.id).clone();
     assert_eq!(jar.total_principal(), jar_after.total_principal());
@@ -319,7 +319,7 @@ fn test_failed_withdraw_promise(
 
     let withdrawn = context.withdraw(&alice, &product.id);
     assert_eq!(withdrawn.withdrawn_amount.0, 0);
-    assert_eq!(withdrawn.interest.0, 0);
+    assert_eq!(withdrawn.claimed_amount.0, 0);
 
     let contract = context.contract();
     let jar = contract.get_account(&alice).get_jar(&product.id);
@@ -394,7 +394,7 @@ fn test_failed_bulk_withdraw_internal(
         .after_bulk_withdraw_internal(alice.clone(), request, false);
 
     assert!(withdraw.withdrawals.is_empty());
-    assert_eq!(withdraw.total_amount.0, 0);
+    assert_eq!(withdraw.withdrawn_amount.0, 0);
 
     let current_principal = context
         .contract()
@@ -480,7 +480,7 @@ fn withdraw_all(
     let withdrawn = context.withdraw_all(&alice);
     assert_eq!(
         regular_jar.total_principal() + long_term_jar.total_principal(),
-        withdrawn.total_amount.0
+        withdrawn.withdrawn_amount.0
     );
 
     let jars = context.contract().get_jars_for_account(alice.clone());
@@ -599,7 +599,7 @@ fn batch_withdraw_all_with_failed_transfer_promise(
     let withdrawn = context.withdraw_all(&alice);
 
     assert!(withdrawn.withdrawals.is_empty());
-    assert_eq!(0, withdrawn.total_amount.0);
+    assert_eq!(0, withdrawn.withdrawn_amount.0);
 
     let jars = context.contract().get_jars_for_account(alice.clone());
     assert_eq!(jar.total_principal() * 2, jars.get_total_principal());
@@ -657,7 +657,7 @@ fn batch_withdraw_partially(
         .into_iter()
         .map(|deposit| deposit.principal)
         .sum::<TokenAmount>();
-    assert_eq!(total_target_deposits_principal, withdrawn.total_amount.0);
+    assert_eq!(total_target_deposits_principal, withdrawn.withdrawn_amount.0);
 
     let jars = context.contract().get_jars_for_account(alice.clone());
     assert_eq!(1, jars.0.get(&product_3.id).unwrap().len());
@@ -694,8 +694,9 @@ fn withdraw_all_with_not_ordered_deposits(
 
     let withdrawal = context.withdraw_all(&alice);
     assert_eq!(withdrawal.withdrawals[0].withdrawn_amount.0, jar.total_principal());
-    assert_eq!(withdrawal.withdrawals[0].interest.0, interest);
-    assert_eq!(withdrawal.total_amount.0, jar.total_principal() + interest);
+    assert_eq!(withdrawal.withdrawals[0].claimed_amount.0, interest);
+    assert_eq!(withdrawal.withdrawn_amount.0, jar.total_principal());
+    assert_eq!(withdrawal.claimed_amount.0, interest);
 }
 
 #[rstest]
@@ -726,7 +727,7 @@ fn failed_bulk_withdraw_restores_interest(
 
     test_env_ext::set_test_future_success(false);
     let withdrawn = context.withdraw_all(&alice);
-    assert_eq!(withdrawn.total_amount.0, 0);
+    assert_eq!(withdrawn.withdrawn_amount.0, 0);
 
     let contract = context.contract();
     assert_eq!(interest_before, contract.get_total_interest(alice.clone()).amount);
