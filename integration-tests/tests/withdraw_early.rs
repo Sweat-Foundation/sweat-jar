@@ -44,17 +44,22 @@ async fn withdraw_fixed_jar_before_maturity_with_interest() -> anyhow::Result<()
         alice_balance_after - alice_balance
     );
 
-    // Interest is reported as a regular claim alongside the withdrawal.
+    // Interest is reported as a regular claim emitted after the withdrawal.
     let events: Vec<Value> = outcome
         .logs()
         .iter()
         .filter_map(|log| log.strip_prefix("EVENT_JSON:"))
         .map(serde_json::from_str)
         .collect::<Result<_, _>>()?;
-    let event = |name: &str| events.iter().find(|event| event["event"] == name).cloned();
+    let jar_events: Vec<&Value> = events
+        .iter()
+        .filter(|event| event["standard"] == "sweat_jar")
+        .collect();
 
-    assert!(event("withdraw").is_some());
-    let claim = event("claim").expect("Claim event is missing");
+    assert_eq!(2, jar_events.len());
+    let (withdraw, claim) = (jar_events[0], jar_events[1]);
+    assert_eq!("withdraw", withdraw["event"]);
+    assert_eq!("claim", claim["event"]);
     assert_eq!(
         claim["data"][1]["items"][0][1],
         json!(withdrawn.interest.0.to_string())

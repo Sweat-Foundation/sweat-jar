@@ -765,7 +765,7 @@ impl Context {
 }
 
 #[rstest]
-fn withdraw_emits_withdraw_and_claim_events(
+fn withdraw_emits_withdraw_then_claim_events(
     admin: AccountId,
     alice: AccountId,
     #[from(product_1_year_12_percent)] product: Product,
