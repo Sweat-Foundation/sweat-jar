@@ -1,6 +1,7 @@
 use std::fmt::Display;
 
 use near_sdk::{env, require, AccountId};
+use sweat_jar_model::SUNSET_AT;
 
 use crate::Contract;
 
@@ -25,6 +26,10 @@ impl Contract {
             "Timezone is not set for account '{account_id}'"
         );
     }
+}
+
+pub(crate) fn assert_not_sunset() {
+    require!(env::block_timestamp_ms() < SUNSET_AT, "Jars are closed");
 }
 
 pub(crate) fn assert_gas<Message: Display>(gas_needed: u64, error: impl FnOnce() -> Message) {

@@ -11,7 +11,7 @@ use sweat_jar_model::{
         product::{Apy, Cap, FixedProductTerms, Product, ProductId, Terms},
         withdraw::BulkWithdrawView,
     },
-    Timezone, TokenAmount, MS_IN_DAY,
+    Timezone, TokenAmount, MS_IN_DAY, SUNSET_AT,
 };
 use sweat_jar_primitives::UDecimal;
 
@@ -525,7 +525,7 @@ fn withdraw_all_with_fee(
             ],
         );
 
-    context.set_block_timestamp_in_days(product_with_fixed_fee.terms.get_lockup_term().unwrap() + 1);
+    context.set_block_timestamp_in_ms(product_with_fixed_fee.terms.get_lockup_term().unwrap() + 1);
     context.switch_account(alice.clone());
     context.contract().claim_total(None);
 
@@ -954,5 +954,33 @@ fn withdraw_all_includes_immature_step_jar(
         .unwrap();
     assert_eq!(step_jar.total_principal(), step_withdrawal.withdrawn_amount.0);
 
+    assert!(context.contract().get_jars_for_account(alice).0.is_empty());
+}
+
+#[rstest]
+fn withdraw_callback_completes_after_sunset(
+    admin: AccountId,
+    alice: AccountId,
+    #[from(product_fixed)]
+    #[with(30)]
+    product: Product,
+    #[with(vec![(0, 1_000_000)])] mut jar: Jar,
+) {
+    let mut context = Context::new(admin)
+        .with_products(&[product.clone()])
+        .with_latest_account(&alice, &[(product.id.clone(), jar.lock().clone())]);
+
+    // A withdrawal dispatched before the sunset must still settle when its callback lands after it.
+    context.set_block_timestamp_in_ms(SUNSET_AT);
+
+    let request = WithdrawalRequest {
+        product_id: product.id.clone(),
+        withdrawal: WithdrawalDto::new(1_000_000, 0),
+        partition_index: 1,
+        interest: None,
+    };
+    let withdrawn = context.contract().after_withdraw_internal(alice.clone(), request, true);
+
+    assert_eq!(1_000_000, withdrawn.withdrawn_amount.0);
     assert!(context.contract().get_jars_for_account(alice).0.is_empty());
 }
