@@ -47,7 +47,7 @@ async fn claim_many_jars() -> Result<()> {
 
     let withdrawn = jar::withdraw_all(&context.jar, &context.alice, None).await?;
     assert_eq!(1, withdrawn.withdrawals.len());
-    assert_eq!(DEPOSITS_COUNT as u128 * DEPOSIT_PRINCIPAL, withdrawn.withdrawn_amount.0);
+    assert_eq!(DEPOSITS_COUNT as u128 * DEPOSIT_PRINCIPAL, withdrawn.total_amount.0);
 
     assert_eq!(
         jar::get_jars_for_account(&context.jar, context.alice.id())

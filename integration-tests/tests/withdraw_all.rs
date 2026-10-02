@@ -53,9 +53,10 @@ async fn withdraw_all() -> Result<()> {
 
     // The 10-minute jar is immature but fixed jars allow early withdrawal.
     let product_10_min_total = PRINCIPAL + 3;
-    let transferred = withdrawn.withdrawn_amount.0 + withdrawn.claimed_amount.0;
+    let transferred = withdrawn.total_amount.0;
+    assert_eq!(transferred, withdrawn.principal.0 + withdrawn.interest.0);
 
-    assert_eq!(withdrawn.withdrawn_amount.0, product_5_min_total + product_10_min_total);
+    assert_eq!(withdrawn.principal.0, product_5_min_total + product_10_min_total);
     assert_eq!(alice_balance_after - alice_balance, transferred);
     assert_eq!(jar_balance - jar_balance_after, transferred);
 

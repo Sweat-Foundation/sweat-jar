@@ -27,7 +27,7 @@ async fn test_fixed_withdraw_fee() -> anyhow::Result<()> {
 
     alice_balance = ft::ft_balance_of(&context.ft, context.alice.id()).await?;
     // Fixed jars pay out accrued interest along with the principal.
-    assert_eq!(99_999_999_999_999_999_999_999_000 + withdraw_result.claimed_amount.0, alice_balance);
+    assert_eq!(99_999_999_999_999_999_999_999_000 + withdraw_result.interest.0, alice_balance);
 
     let expected_fee = 1_000;
     let available_fee = jar::get_fee_amount(&context.jar).await?;
@@ -66,7 +66,7 @@ async fn test_percent_withdraw_fee() -> anyhow::Result<()> {
 
     alice_balance = ft::ft_balance_of(&context.ft, context.alice.id()).await?;
     // Fixed jars pay out accrued interest along with the principal.
-    assert_eq!(99_999_999_999_999_999_999_990_000 + withdraw_result.claimed_amount.0, alice_balance);
+    assert_eq!(99_999_999_999_999_999_999_990_000 + withdraw_result.interest.0, alice_balance);
 
     let expected_fee = 10_000;
     let available_fee = jar::get_fee_amount(&context.jar).await?;

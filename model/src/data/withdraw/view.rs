@@ -14,16 +14,18 @@ pub struct WithdrawView {
     pub fee: U128,
 
     /// Accrued interest claimed and transferred together with the principal.
-    pub claimed_amount: U128,
+    pub interest: U128,
 }
 
 #[derive(Debug, Default)]
 #[near(serializers=[json])]
 pub struct BulkWithdrawView {
-    /// Total net principal withdrawn across all jars.
-    pub withdrawn_amount: U128,
-    /// Total interest claimed along with the principal.
-    pub claimed_amount: U128,
+    /// Total amount transferred to the user: `principal` + `interest`.
+    pub total_amount: U128,
+    /// Net principal withdrawn across all jars.
+    pub principal: U128,
+    /// Interest claimed along with the principal across all jars.
+    pub interest: U128,
     pub withdrawals: Vec<WithdrawView>,
 }
 
@@ -36,13 +38,13 @@ impl WithdrawView {
             product_id: product_id.clone(),
             withdrawn_amount: net_amount.into(),
             fee: U128(fee),
-            claimed_amount: U128(0),
+            interest: U128(0),
         }
     }
 
     #[must_use]
-    pub fn with_claimed_amount(mut self, claimed_amount: TokenAmount) -> Self {
-        self.claimed_amount = claimed_amount.into();
+    pub fn with_interest(mut self, interest: TokenAmount) -> Self {
+        self.interest = interest.into();
         self
     }
 }
@@ -63,7 +65,7 @@ mod test {
                 product_id: ProductId::new(),
                 withdrawn_amount: U128(1_000_000 - 100),
                 fee: U128(100),
-                claimed_amount: U128(0),
+                interest: U128(0),
             }
         );
     }

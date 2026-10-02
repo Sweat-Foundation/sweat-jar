@@ -36,11 +36,11 @@ async fn withdraw_fixed_jar_before_maturity_with_interest() -> anyhow::Result<()
     let withdrawn: WithdrawView = outcome.json()?;
 
     assert_eq!(PRINCIPAL, withdrawn.withdrawn_amount.0);
-    assert!(withdrawn.claimed_amount.0 >= interest_before);
+    assert!(withdrawn.interest.0 >= interest_before);
 
     let alice_balance_after = ft::ft_balance_of(&context.ft, context.alice.id()).await?;
     assert_eq!(
-        withdrawn.withdrawn_amount.0 + withdrawn.claimed_amount.0,
+        withdrawn.withdrawn_amount.0 + withdrawn.interest.0,
         alice_balance_after - alice_balance
     );
 
@@ -57,7 +57,7 @@ async fn withdraw_fixed_jar_before_maturity_with_interest() -> anyhow::Result<()
     let claim = event("claim").expect("Claim event is missing");
     assert_eq!(
         claim["data"][1]["items"][0][1],
-        json!(withdrawn.claimed_amount.0.to_string())
+        json!(withdrawn.interest.0.to_string())
     );
 
     assert!(jar::get_jars_for_account(&context.jar, context.alice.id())

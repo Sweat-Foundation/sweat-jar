@@ -71,7 +71,7 @@ impl WithdrawalRequest {
 
     fn to_view(&self) -> WithdrawView {
         WithdrawView::new(&self.product_id, self.withdrawal.amount, self.withdrawal.fee)
-            .with_claimed_amount(self.interest_amount())
+            .with_interest(self.interest_amount())
     }
 }
 
@@ -299,8 +299,9 @@ impl Contract {
 
             let deposit_withdrawal = request.to_view();
 
-            result.withdrawn_amount.0 += deposit_withdrawal.withdrawn_amount.0;
-            result.claimed_amount.0 += deposit_withdrawal.claimed_amount.0;
+            result.principal.0 += deposit_withdrawal.withdrawn_amount.0;
+            result.interest.0 += deposit_withdrawal.interest.0;
+            result.total_amount.0 += deposit_withdrawal.withdrawn_amount.0 + deposit_withdrawal.interest.0;
             result.withdrawals.push(deposit_withdrawal);
         }
 
