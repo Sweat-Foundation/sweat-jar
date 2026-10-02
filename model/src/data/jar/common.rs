@@ -21,21 +21,24 @@ impl Jar {
         self.deposits.iter().map(|deposit| deposit.principal).sum()
     }
 
+    /// Principal of matured deposits and the partition index splitting them off.
     pub fn get_liquid_balance(&self, terms: &Terms) -> (TokenAmount, usize) {
+        let partition_index = self.deposits.partition_point(|deposit| terms.is_liquid(deposit));
+
+        let sum = self.deposits[..partition_index]
+            .iter()
+            .map(|deposit| deposit.principal)
+            .sum();
+
+        (sum, partition_index)
+    }
+
+    /// Like `get_liquid_balance`, but takes every deposit if the terms allow early withdrawal.
+    pub fn get_withdrawable_balance(&self, terms: &Terms) -> (TokenAmount, usize) {
         if terms.allows_early_withdrawal() {
-            let sum = self.deposits.iter().map(|deposit| deposit.principal).sum();
-            let partition_index = self.deposits.len();
-
-            (sum, partition_index)
+            (self.total_principal(), self.deposits.len())
         } else {
-            let partition_index = self.deposits.partition_point(|deposit| terms.is_liquid(deposit));
-
-            let sum = self.deposits[..partition_index]
-                .iter()
-                .map(|deposit| deposit.principal)
-                .sum();
-
-            (sum, partition_index)
+            self.get_liquid_balance(terms)
         }
     }
 

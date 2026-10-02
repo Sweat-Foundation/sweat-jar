@@ -255,8 +255,9 @@ fn get_interest_after_withdraw(
     context.switch_account(&alice);
     context.contract().withdraw(product.id.clone());
 
+    // Fixed jars hand out interest along with the principal.
     let interest = context.contract().get_total_interest(alice.clone());
-    assert_eq!(12_000_000, interest.amount.total.0);
+    assert_eq!(0, interest.amount.total.0);
 }
 
 #[rstest]

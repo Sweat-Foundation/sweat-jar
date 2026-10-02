@@ -5,13 +5,20 @@ use super::{Product, Terms, WithdrawalFee};
 use crate::{data::jar::Deposit, TokenAmount};
 
 pub trait TermsApi {
+    /// Whether principal can be withdrawn before deposits mature. Doesn't affect restaking.
     fn allows_early_withdrawal(&self) -> bool;
+    /// Whether withdrawal also claims the jar's accrued interest.
+    fn claims_interest_on_withdrawal(&self) -> bool;
     fn is_liquid(&self, deposit: &Deposit) -> bool;
 }
 
 impl TermsApi for Terms {
     fn allows_early_withdrawal(&self) -> bool {
-        matches!(self, Terms::Flexible(_))
+        matches!(self, Terms::Fixed(_) | Terms::Flexible(_))
+    }
+
+    fn claims_interest_on_withdrawal(&self) -> bool {
+        matches!(self, Terms::Fixed(_))
     }
 
     fn is_liquid(&self, deposit: &Deposit) -> bool {
