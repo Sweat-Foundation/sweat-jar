@@ -123,8 +123,10 @@ pub trait RestakeApi {
     /// This function may panic under the following conditions:
     /// - If the product of the original jar does not support restaking.
     /// - If the function is called by an account other than the owner of the original jar.
-    /// - If the original jar is not yet mature. Fixed jars are exempt when restaking into
-    ///   a score-based product: all their deposits are restaked, accrued interest stays claimable.
+    /// - If the target product is not score-based.
+    ///
+    /// All deposits of the original jar are restaked regardless of maturity.
+    /// Accrued interest stays in the original jar and is claimable separately.
     fn restake(
         &mut self,
         from: ProductId,
@@ -135,10 +137,9 @@ pub trait RestakeApi {
 
     /// TODO: update doc
     /// Restakes all jars for user into a Product with corresponding `product_id`.
-    /// If `amount` is some, only this amount will be restaked. The rest of mature principal
-    /// will be withdrawn.
-    /// Only mature principal is taken, except for fixed jars restaked into a score-based product:
-    /// their immature deposits are taken too, accrued interest stays claimable.
+    /// The target product must be score-based. All deposits are taken regardless of maturity.
+    /// If `amount` is some, only this amount will be restaked. The rest of the principal
+    /// will be withdrawn. Accrued interest stays in the original jars and is claimable separately.
     ///
     /// TODO: make with `ft_transfer_call` to support extra deposit
     fn restake_all(
@@ -262,7 +263,9 @@ pub trait WithdrawApi {
     /// This function may panic under the following conditions:
     /// - If the caller is not the owner of the specified jar.
     /// - If the withdrawal amount exceeds the available balance in the jar.
-    /// - If attempting to withdraw from a Fixed jar that is not yet mature.
+    ///
+    /// All deposits are withdrawn regardless of maturity. Accrued interest of all but Flexible
+    /// jars is claimed and transferred together with the principal.
     fn withdraw(&mut self, product_id: ProductId) -> ::near_sdk::PromiseOrValue<WithdrawView>;
 
     /// Withdraws all jars for user, or only specified list of jars if `jars` argument is `Some`

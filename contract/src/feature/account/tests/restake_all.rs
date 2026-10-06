@@ -22,10 +22,11 @@ use crate::{
 fn restake_all_for_single_product(
     admin: AccountId,
     #[from(product_1_year_apy_20_percent)] product: Product,
+    #[from(product_1_year_12_cap_score_based)] target_product: Product,
     #[with(vec![(0, 100_000), (MS_IN_YEAR / 4, 100_000), (MS_IN_YEAR / 2, 100_000)])] jar: Jar,
 ) {
     let mut context = Context::new(admin)
-        .with_products(&[product.clone()])
+        .with_products(&[product.clone(), target_product.clone()])
         .with_latest_account(&alice(), &[(product.id.clone(), jar.clone())]);
 
     let test_time = MS_IN_YEAR * 6 / 4;
@@ -35,20 +36,24 @@ fn restake_all_for_single_product(
 
     let valid_until = MS_IN_YEAR * 10;
     let ticket = DepositTicket {
-        product_id: product.id.clone(),
+        product_id: target_product.id.clone(),
         valid_until: valid_until.into(),
-        timezone: None,
+        timezone: Some(Timezone::hour_shift(0)),
     };
     context.contract().restake_all(ticket, None, None);
 
     let contract = context.contract();
     let account = contract.get_account(&alice());
+
     let jar = account.get_jar(&product.id);
-    assert_eq!(2, jar.deposits.len());
-    assert_eq!(test_time, jar.deposits.last().unwrap().created_at);
-    assert_eq!(200_000, jar.deposits.last().unwrap().principal);
+    assert!(jar.deposits.is_empty());
     assert_eq!(test_time, jar.cache.unwrap().updated_at);
     assert_eq!(60_000, jar.cache.unwrap().interest);
+
+    let target_jar = account.get_jar(&target_product.id);
+    assert_eq!(1, target_jar.deposits.len());
+    assert_eq!(test_time, target_jar.deposits.last().unwrap().created_at);
+    assert_eq!(300_000, target_jar.deposits.last().unwrap().principal);
 }
 
 #[rstest]
@@ -56,6 +61,7 @@ fn restake_all_for_different_products(
     admin: AccountId,
     #[from(product_1_year_apy_10_percent)] product: Product,
     #[from(product_1_year_apy_20_percent)] another_product: Product,
+    #[from(product_1_year_12_cap_score_based)] target_product: Product,
     #[with(vec![(0, 100_000), (MS_IN_YEAR / 2, 100_000)])]
     #[from(jar)]
     jar: Jar,
@@ -64,7 +70,7 @@ fn restake_all_for_different_products(
     another_jar: Jar,
 ) {
     let mut context = Context::new(admin)
-        .with_products(&[product.clone(), another_product.clone()])
+        .with_products(&[product.clone(), another_product.clone(), target_product.clone()])
         .with_latest_account(
             &alice(),
             &[
@@ -79,9 +85,9 @@ fn restake_all_for_different_products(
     context.switch_account(alice());
     let valid_until = MS_IN_YEAR * 10;
     let ticket = DepositTicket {
-        product_id: another_product.id.clone(),
+        product_id: target_product.id.clone(),
         valid_until: valid_until.into(),
-        timezone: None,
+        timezone: Some(Timezone::hour_shift(0)),
     };
     context.contract().restake_all(ticket, None, None);
 
@@ -89,27 +95,30 @@ fn restake_all_for_different_products(
     let account = contract.get_account(&alice());
 
     let jar = account.get_jar(&product.id);
-    assert_eq!(0, jar.deposits.len());
+    assert!(jar.deposits.is_empty());
     assert_eq!(test_time, jar.cache.unwrap().updated_at);
     assert_eq!(20_000, jar.cache.unwrap().interest);
 
     let another_jar = account.get_jar(&another_product.id);
-    assert_eq!(1, another_jar.deposits.len());
-    assert_eq!(test_time, another_jar.deposits.last().unwrap().created_at);
-    assert_eq!(600_000, another_jar.deposits.last().unwrap().principal);
+    assert!(another_jar.deposits.is_empty());
     assert_eq!(test_time, another_jar.cache.unwrap().updated_at);
     assert_eq!(80_000, another_jar.cache.unwrap().interest);
+
+    let target_jar = account.get_jar(&target_product.id);
+    assert_eq!(1, target_jar.deposits.len());
+    assert_eq!(test_time, target_jar.deposits.last().unwrap().created_at);
+    assert_eq!(600_000, target_jar.deposits.last().unwrap().principal);
 }
 
 #[rstest]
 fn restake_all_to_new_product(
     admin: AccountId,
     #[from(product_1_year_apy_10_percent)] product: Product,
-    #[from(product_1_year_apy_20_percent)] another_product: Product,
+    #[from(product_1_year_12_cap_score_based)] target_product: Product,
     #[with(vec![(0, 50_000), (MS_IN_YEAR / 4, 20_000)])] jar: Jar,
 ) {
     let mut context = Context::new(admin)
-        .with_products(&[product.clone(), another_product.clone()])
+        .with_products(&[product.clone(), target_product.clone()])
         .with_latest_account(&alice(), &[(product.id.clone(), jar)]);
 
     let test_time = MS_IN_YEAR * 3 / 2;
@@ -118,9 +127,9 @@ fn restake_all_to_new_product(
     context.switch_account(alice());
     let valid_until = MS_IN_YEAR * 10;
     let ticket = DepositTicket {
-        product_id: another_product.id.clone(),
+        product_id: target_product.id.clone(),
         valid_until: valid_until.into(),
-        timezone: None,
+        timezone: Some(Timezone::hour_shift(0)),
     };
     context.contract().restake_all(ticket, None, None);
 
@@ -132,11 +141,11 @@ fn restake_all_to_new_product(
     assert_eq!(test_time, jar.cache.unwrap().updated_at);
     assert_eq!(7_000, jar.cache.unwrap().interest);
 
-    let another_jar = account.get_jar(&another_product.id);
-    assert_eq!(1, another_jar.deposits.len());
-    assert_eq!(test_time, another_jar.deposits.last().unwrap().created_at);
-    assert_eq!(70_000, another_jar.deposits.last().unwrap().principal);
-    assert!(another_jar.cache.is_none());
+    let target_jar = account.get_jar(&target_product.id);
+    assert_eq!(1, target_jar.deposits.len());
+    assert_eq!(test_time, target_jar.deposits.last().unwrap().created_at);
+    assert_eq!(70_000, target_jar.deposits.last().unwrap().principal);
+    assert!(target_jar.cache.is_none());
 }
 
 #[rstest]
@@ -205,10 +214,11 @@ fn restake_all_to_disabled_product(
 fn restake_all_with_withdrawal(
     admin: AccountId,
     #[from(product_1_year_apy_10_percent)] product: Product,
+    #[from(product_1_year_12_cap_score_based)] target_product: Product,
     #[with(vec![(0, 200_000), (MS_IN_YEAR / 4, 800_000)])] jar: Jar,
 ) {
     let mut context = Context::new(admin)
-        .with_products(&[product.clone()])
+        .with_products(&[product.clone(), target_product.clone()])
         .with_latest_account(&alice(), &[(product.id.clone(), jar)]);
 
     let test_time = MS_IN_YEAR * 2;
@@ -217,25 +227,30 @@ fn restake_all_with_withdrawal(
     context.switch_account(alice());
     let valid_until = MS_IN_YEAR * 10;
     let ticket = DepositTicket {
-        product_id: product.id.clone(),
+        product_id: target_product.id.clone(),
         valid_until: valid_until.into(),
-        timezone: None,
+        timezone: Some(Timezone::hour_shift(0)),
     };
     context.contract().restake_all(ticket, None, Some(100_000.into()));
 
     let contract = context.contract();
     let account = contract.get_account(&alice());
+
     let jar = account.get_jar(&product.id);
-    assert_eq!(1, jar.deposits.len());
-    assert_eq!(test_time, jar.deposits.last().unwrap().created_at);
-    assert_eq!(100_000, jar.deposits.last().unwrap().principal);
+    assert!(jar.deposits.is_empty());
     assert_eq!(test_time, jar.cache.unwrap().updated_at);
     assert_eq!(100_000, jar.cache.unwrap().interest);
+
+    let target_jar = account.get_jar(&target_product.id);
+    assert_eq!(1, target_jar.deposits.len());
+    assert_eq!(test_time, target_jar.deposits.last().unwrap().created_at);
+    assert_eq!(100_000, target_jar.deposits.last().unwrap().principal);
 }
 
 #[rstest]
 fn restake_all_for_multiple_products_with_withdrawal(
     admin: AccountId,
+    #[from(product_1_year_12_cap_score_based)] target_product: Product,
     alice: AccountId,
     #[from(product_1_year_apy_10_percent)] product: Product,
     #[from(product_1_year_apy_20_percent)] another_product: Product,
@@ -247,7 +262,7 @@ fn restake_all_for_multiple_products_with_withdrawal(
     another_jar: Jar,
 ) {
     let mut context = Context::new(admin)
-        .with_products(&[product.clone(), another_product.clone()])
+        .with_products(&[product.clone(), another_product.clone(), target_product.clone()])
         .with_latest_account(
             &alice,
             &[
@@ -263,9 +278,9 @@ fn restake_all_for_multiple_products_with_withdrawal(
     // Create restake ticket
     let valid_until = MS_IN_YEAR * 10;
     let ticket = DepositTicket {
-        product_id: product.id.clone(),
+        product_id: target_product.id.clone(),
         valid_until: valid_until.into(),
-        timezone: None,
+        timezone: Some(Timezone::hour_shift(0)),
     };
 
     let principal = &jar.total_principal() + &another_jar.total_principal();
@@ -290,6 +305,7 @@ fn restake_all_for_multiple_products_with_withdrawal(
 #[rstest]
 fn restake_all_for_multiple_products_with_withdrawal_and_fee(
     admin: AccountId,
+    #[from(product_1_year_12_cap_score_based)] target_product: Product,
     alice: AccountId,
     #[from(product_1_year_12_percent_with_fixed_fee)] product: Product,
     #[from(product_1_year_12_percent_with_percent_fee)] another_product: Product,
@@ -301,7 +317,7 @@ fn restake_all_for_multiple_products_with_withdrawal_and_fee(
     another_jar: Jar,
 ) {
     let mut context = Context::new(admin)
-        .with_products(&[product.clone(), another_product.clone()])
+        .with_products(&[product.clone(), another_product.clone(), target_product.clone()])
         .with_latest_account(
             &alice,
             &[
@@ -317,9 +333,9 @@ fn restake_all_for_multiple_products_with_withdrawal_and_fee(
     // Create restake ticket
     let valid_until = MS_IN_YEAR * 10;
     let ticket = DepositTicket {
-        product_id: product.id.clone(),
+        product_id: target_product.id.clone(),
         valid_until: valid_until.into(),
-        timezone: None,
+        timezone: Some(Timezone::hour_shift(0)),
     };
 
     let principal = &jar.total_principal() + &another_jar.total_principal();
@@ -350,6 +366,7 @@ fn restake_all_for_multiple_products_with_withdrawal_and_fee(
 #[rstest]
 fn restake_event_is_success_reflects_transfer_failure(
     admin: AccountId,
+    #[from(product_1_year_12_cap_score_based)] target_product: Product,
     alice: AccountId,
     #[from(product_1_year_apy_10_percent)] product: Product,
     #[with(vec![(0, 200_000), (MS_IN_YEAR / 4, 300_000)])]
@@ -359,7 +376,7 @@ fn restake_event_is_success_reflects_transfer_failure(
     use crate::common::env::test_env_ext;
 
     let mut context = Context::new(admin)
-        .with_products(&[product.clone()])
+        .with_products(&[product.clone(), target_product.clone()])
         .with_latest_account(&alice, &[(product.id.clone(), jar.clone())]);
 
     // Wait until maturity
@@ -369,9 +386,9 @@ fn restake_event_is_success_reflects_transfer_failure(
     // Create restake ticket
     let valid_until = MS_IN_YEAR * 10;
     let ticket = DepositTicket {
-        product_id: product.id.clone(),
+        product_id: target_product.id.clone(),
         valid_until: valid_until.into(),
-        timezone: None,
+        timezone: Some(Timezone::hour_shift(0)),
     };
 
     // Simulate failed transfer
@@ -432,6 +449,7 @@ fn claim_after_restake_all_into_first_score_based_jar(
 #[rstest]
 fn restake_all_with_not_ordered_deposits(
     admin: AccountId,
+    #[from(product_1_year_12_cap_score_based)] target_product: Product,
     alice: AccountId,
     #[from(product_fixed)]
     #[with(365, "365d_12apy")]
@@ -574,6 +592,7 @@ fn restake_all_with_not_ordered_deposits(
             product_365d_30apy_premium_1.clone(),
             product_steps_365d_20000_score_cap.clone(),
             product_the_new_year_2025.clone(),
+            target_product.clone(),
         ])
         .with_v1_account(
             &alice,
@@ -599,11 +618,10 @@ fn restake_all_with_not_ordered_deposits(
     context.switch_account(&alice);
     context.contract().claim_total(None);
 
-    let target_product_id = product_365d_12apy.id.clone();
     let ticket = sweat_jar_model::data::deposit::DepositTicket {
-        product_id: target_product_id.clone(),
+        product_id: target_product.id.clone(),
         valid_until: 0.into(),
-        timezone: None,
+        timezone: Some(Timezone::hour_shift(0)),
     };
 
     let amount_to_restake = 15_592_030_000_000_000_000_000;
@@ -613,7 +631,7 @@ fn restake_all_with_not_ordered_deposits(
 
     let jars = context.contract().get_jars_for_account_detailed(&alice);
     let last_deposit = jars
-        .get(&target_product_id)
+        .get(&target_product.id)
         .unwrap()
         .deposits
         .iter()
@@ -624,7 +642,7 @@ fn restake_all_with_not_ordered_deposits(
 }
 
 #[rstest]
-fn restake_all_into_score_based_takes_immature_fixed_deposits(
+fn restake_all_takes_immature_deposits(
     admin: AccountId,
     alice: AccountId,
     #[from(product_1_year_apy_20_percent)] fixed_product: Product,
@@ -666,15 +684,11 @@ fn restake_all_into_score_based_takes_immature_fixed_deposits(
     let contract = context.contract();
     let account = contract.get_account(&alice);
 
-    // Immature fixed deposits move to the target, immature score-based ones stay.
     assert!(account.get_jar(&fixed_product.id).deposits.is_empty());
     assert_ne!(0, account.get_jar(&fixed_product.id).cache.unwrap().interest);
+    assert!(account.get_jar(&score_based_product.id).deposits.is_empty());
     assert_eq!(
-        score_based_jar.total_principal(),
-        account.get_jar(&score_based_product.id).total_principal()
-    );
-    assert_eq!(
-        fixed_jar.total_principal(),
+        fixed_jar.total_principal() + score_based_jar.total_principal(),
         account.get_jar(&target_product.id).total_principal()
     );
 }

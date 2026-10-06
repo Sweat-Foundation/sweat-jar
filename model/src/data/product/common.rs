@@ -2,39 +2,16 @@ use near_sdk::{env, json_types::Base64VecU8, require};
 use sweat_jar_primitives::UDecimal;
 
 use super::{Product, Terms, WithdrawalFee};
-use crate::{data::jar::Deposit, TokenAmount};
+use crate::TokenAmount;
 
 pub trait TermsApi {
-    /// Whether principal can be withdrawn before deposits mature. Doesn't affect restaking.
-    fn allows_early_withdrawal(&self) -> bool;
     /// Whether withdrawal also claims the jar's accrued interest.
     fn claims_interest_on_withdrawal(&self) -> bool;
-    /// Whether immature deposits can be restaked into a product with `target` terms.
-    fn allows_early_restake_into(&self, target: &Terms) -> bool;
-    fn is_liquid(&self, deposit: &Deposit) -> bool;
 }
 
 impl TermsApi for Terms {
-    fn allows_early_withdrawal(&self) -> bool {
-        matches!(self, Terms::Fixed(_) | Terms::Flexible(_))
-    }
-
     fn claims_interest_on_withdrawal(&self) -> bool {
-        matches!(self, Terms::Fixed(_))
-    }
-
-    fn allows_early_restake_into(&self, target: &Terms) -> bool {
-        matches!(self, Terms::Fixed(_)) && target.is_score_based()
-    }
-
-    fn is_liquid(&self, deposit: &Deposit) -> bool {
-        let now = env::block_timestamp_ms();
-        match self {
-            Terms::Fixed(terms) => deposit.is_liquid(now, terms.lockup_term.0),
-            Terms::Flexible(_) => true,
-            Terms::ScoreBased(terms) => deposit.is_liquid(now, terms.lockup_term.0),
-            Terms::TieredScoreBased(terms) => deposit.is_liquid(now, terms.lockup_term.0),
-        }
+        !matches!(self, Terms::Flexible(_))
     }
 }
 

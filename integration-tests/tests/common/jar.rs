@@ -8,13 +8,17 @@ use near_workspaces::{
     Account, AccountId, Contract,
 };
 use serde_json::{json, Value};
-use sweat_jar_model::data::{
-    claim::ClaimedAmountView,
-    deposit::DepositTicket,
-    jar::{AggregatedInterestView, JarsView},
-    product::{Product, ProductId},
-    score::DailyScoreView,
-    withdraw::{BulkWithdrawView, WithdrawView},
+use sweat_jar_model::{
+    data::{
+        claim::ClaimedAmountView,
+        deposit::{DepositMessage, DepositTicket, Purpose},
+        jar::{AggregatedInterestView, JarsView},
+        product::{Product, ProductId},
+        score::DailyScoreView,
+        withdraw::{BulkWithdrawView, WithdrawView},
+    },
+    signer::test_utils::MessageSigner,
+    Timezone, MS_IN_DAY,
 };
 
 type U128 = u128;
@@ -99,6 +103,46 @@ pub async fn is_penalty_applied(jar: &Contract, account_id: &AccountId) -> Resul
 
 pub async fn block_timestamp_ms(jar: &Contract) -> Result<u64> {
     Ok(jar.view("block_timestamp_ms").await?.json()?)
+}
+
+/// Registers `product` with a fresh public key: score-based products must be protected.
+pub async fn register_protected_product(jar: &Contract, manager: &Account, product: Product) -> Result<MessageSigner> {
+    let signer = MessageSigner::new();
+    let product = Product {
+        public_key: Some(signer.public_key().into()),
+        ..product
+    };
+    register_product(jar, manager, product).await?;
+
+    Ok(signer)
+}
+
+/// Restake ticket into `product_id` signed for `amount` at the account's `nonce`.
+pub async fn signed_restake_ticket(
+    jar: &Contract,
+    user: &Account,
+    product_id: &str,
+    signer: &MessageSigner,
+    amount: u128,
+    nonce: u32,
+) -> Result<(DepositTicket, Base64VecU8)> {
+    let valid_until = block_timestamp_ms(jar).await? + MS_IN_DAY;
+    let message = DepositMessage::new(
+        Purpose::Restake,
+        jar.id(),
+        user.id(),
+        &product_id.to_string(),
+        amount,
+        valid_until,
+        nonce,
+    );
+    let ticket = DepositTicket {
+        product_id: product_id.to_string(),
+        valid_until: valid_until.into(),
+        timezone: Some(Timezone::hour_shift(0)),
+    };
+
+    Ok((ticket, signer.sign(message.as_str()).into()))
 }
 
 pub async fn register_product(jar: &Contract, manager: &Account, product: Product) -> Result<()> {

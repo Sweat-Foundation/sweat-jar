@@ -1,5 +1,7 @@
 #![cfg(test)]
 
+use std::collections::HashSet;
+
 use near_sdk::{json_types::U128, store::LookupMap, AccountId, PromiseOrValue, Timestamp};
 use rstest::{fixture, rstest};
 use sweat_jar_model::{
@@ -1261,9 +1263,7 @@ mod account_score_tests {
     /// (as do `set_penalty` batches, airdrops and the feature-flag setters), so
     /// it can roll the score window just like a claim. A `withdraw_all` before
     /// the day's `record_score` must not destroy that day's accrual either.
-    ///
-    /// (Single `withdraw` and `restake` do NOT call `settle_interest` — they use
-    /// the account-level cache update — so they are not exposed to this.)
+    /// Single `withdraw` and `restake` settle the same way.
     #[rstest]
     fn withdraw_all_before_record_score_does_not_destroy_interest(
         admin: AccountId,
@@ -1304,7 +1304,7 @@ mod account_score_tests {
             withdraw_all(&mut ctx, &healthy);
             total_healthy += ctx.claim_total(&healthy);
 
-            // racing.near: withdraw_all (nothing liquid, but it settles) BEFORE
+            // racing.near: withdraw_all (no jars selected, but it settles) BEFORE
             // the oracle batch, then the batch, then the claim.
             ctx.set_block_timestamp_in_ms(start + 4 * MS_IN_HOUR);
             withdraw_all(&mut ctx, &racing);
@@ -1337,7 +1337,8 @@ mod account_score_tests {
 
     fn withdraw_all(ctx: &mut Context, account_id: &AccountId) {
         ctx.switch_account(account_id);
-        let PromiseOrValue::Value(_) = ctx.contract().withdraw_all(None) else {
+        // An empty selection settles interest without withdrawing anything.
+        let PromiseOrValue::Value(_) = ctx.contract().withdraw_all(Some(HashSet::new())) else {
             panic!("expected an immediate value from withdraw_all");
         };
     }
