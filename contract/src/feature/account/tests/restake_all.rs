@@ -622,3 +622,59 @@ fn restake_all_with_not_ordered_deposits(
 
     assert_eq!(last_deposit.1 .0, amount_to_restake);
 }
+
+#[rstest]
+fn restake_all_into_score_based_takes_immature_fixed_deposits(
+    admin: AccountId,
+    alice: AccountId,
+    #[from(product_1_year_apy_20_percent)] fixed_product: Product,
+    #[from(product_7_days_20_cap_score_based)] score_based_product: Product,
+    #[from(product_1_year_12_cap_score_based)] target_product: Product,
+    #[with(vec![(0, 100_000), (MS_IN_DAY, 200_000)])]
+    #[from(jar)]
+    fixed_jar: Jar,
+    #[with(vec![(98 * MS_IN_DAY, 300_000)])]
+    #[from(jar)]
+    score_based_jar: Jar,
+) {
+    let mut context = Context::new(admin)
+        .with_products(&[
+            fixed_product.clone(),
+            score_based_product.clone(),
+            target_product.clone(),
+        ])
+        .with_latest_account(
+            &alice,
+            &[
+                (fixed_product.id.clone(), fixed_jar.clone()),
+                (score_based_product.id.clone(), score_based_jar.clone()),
+            ],
+        );
+    context.contract().get_account_mut(&alice).timezone = Timezone::hour_shift(0);
+
+    let test_time = 100 * MS_IN_DAY;
+    context.set_block_timestamp_in_ms(test_time);
+
+    context.switch_account(alice.clone());
+    let ticket = DepositTicket {
+        product_id: target_product.id.clone(),
+        valid_until: (MS_IN_YEAR * 10).into(),
+        timezone: None,
+    };
+    context.contract().restake_all(ticket, None, None);
+
+    let contract = context.contract();
+    let account = contract.get_account(&alice);
+
+    // Immature fixed deposits move to the target, immature score-based ones stay.
+    assert!(account.get_jar(&fixed_product.id).deposits.is_empty());
+    assert_ne!(0, account.get_jar(&fixed_product.id).cache.unwrap().interest);
+    assert_eq!(
+        score_based_jar.total_principal(),
+        account.get_jar(&score_based_product.id).total_principal()
+    );
+    assert_eq!(
+        fixed_jar.total_principal(),
+        account.get_jar(&target_product.id).total_principal()
+    );
+}

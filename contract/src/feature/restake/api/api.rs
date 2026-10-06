@@ -215,7 +215,8 @@ impl RequestBuilder for RestakeRequestBuilder {
         jar.assert_not_locked();
 
         let product = contract.get_product(&self.from);
-        let (mature_balance, partition_index) = jar.get_liquid_balance(&product.terms);
+        let target_product = contract.get_product(&self.ticket.product_id);
+        let (mature_balance, partition_index) = jar.get_restakable_balance(&product.terms, &target_product.terms);
 
         let deposit = DepositDto::new(self.ticket.product_id.clone(), mature_balance, self.target_amount);
 
@@ -250,6 +251,7 @@ impl RequestBuilder for RestakeAllRequestBuilder {
         let mut partition_indices: Vec<(ProductId, usize)> = vec![];
         let mut total_mature_balance = 0;
         let mut total_fee = 0;
+        let target_product = contract.get_product(&self.ticket.product_id);
 
         for (product_id, jar) in &contract.get_account(&self.account_id).jars {
             if jar.is_locked {
@@ -257,7 +259,7 @@ impl RequestBuilder for RestakeAllRequestBuilder {
             }
 
             let product = contract.get_product(product_id);
-            let (balance, partition_index) = jar.get_liquid_balance(&product.terms);
+            let (balance, partition_index) = jar.get_restakable_balance(&product.terms, &target_product.terms);
 
             // TODO: add test for 0 case and replace `gt` with `>`
             if balance.gt(&0) {

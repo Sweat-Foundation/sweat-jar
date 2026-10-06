@@ -123,7 +123,8 @@ pub trait RestakeApi {
     /// This function may panic under the following conditions:
     /// - If the product of the original jar does not support restaking.
     /// - If the function is called by an account other than the owner of the original jar.
-    /// - If the original jar is not yet mature.
+    /// - If the original jar is not yet mature. Fixed jars are exempt when restaking into
+    ///   a score-based product: all their deposits are restaked, accrued interest stays claimable.
     fn restake(
         &mut self,
         from: ProductId,
@@ -136,6 +137,8 @@ pub trait RestakeApi {
     /// Restakes all jars for user into a Product with corresponding `product_id`.
     /// If `amount` is some, only this amount will be restaked. The rest of mature principal
     /// will be withdrawn.
+    /// Only mature principal is taken, except for fixed jars restaked into a score-based product:
+    /// their immature deposits are taken too, accrued interest stays claimable.
     ///
     /// TODO: make with `ft_transfer_call` to support extra deposit
     fn restake_all(

@@ -42,6 +42,15 @@ impl Jar {
         }
     }
 
+    /// Like `get_liquid_balance`, but takes every deposit if the terms allow early restaking into `target`.
+    pub fn get_restakable_balance(&self, terms: &Terms, target: &Terms) -> (TokenAmount, usize) {
+        if terms.allows_early_restake_into(target) {
+            (self.total_principal(), self.deposits.len())
+        } else {
+            self.get_liquid_balance(terms)
+        }
+    }
+
     pub fn should_close(&self) -> bool {
         self.deposits.is_empty() && self.cache.is_none_or(|cache| cache.interest == 0)
     }
@@ -159,29 +168,63 @@ mod tests {
         }
     }
 
-    #[test]
-    fn only_fixed_jars_are_withdrawn_early_with_interest() {
-        let flexible = Terms::Flexible(FlexibleProductTerms {
+    fn flexible_terms() -> Terms {
+        Terms::Flexible(FlexibleProductTerms {
             apy: Apy::Constant(UDecimal::new(12, 2)),
-        });
-        let score_based = Terms::ScoreBased(ScoreBasedProductTerms {
+        })
+    }
+
+    fn score_based_terms() -> Terms {
+        Terms::ScoreBased(ScoreBasedProductTerms {
             score_cap: 20_000,
             lockup_term: U64(MS_IN_YEAR),
-        });
-        let tiered_score_based = Terms::TieredScoreBased(TieredScoreBasedProductTerms {
+        })
+    }
+
+    fn tiered_score_based_terms() -> Terms {
+        Terms::TieredScoreBased(TieredScoreBasedProductTerms {
             score_cap: ConfigurableValue::Constant(20_000),
             lockup_term: U64(MS_IN_YEAR),
-        });
+        })
+    }
 
+    #[test]
+    fn only_fixed_jars_are_withdrawn_early_with_interest() {
         assert!(fixed_terms().allows_early_withdrawal());
         assert!(fixed_terms().claims_interest_on_withdrawal());
 
-        assert!(flexible.allows_early_withdrawal());
-        assert!(!flexible.claims_interest_on_withdrawal());
+        assert!(flexible_terms().allows_early_withdrawal());
+        assert!(!flexible_terms().claims_interest_on_withdrawal());
 
-        for terms in [score_based, tiered_score_based] {
+        for terms in [score_based_terms(), tiered_score_based_terms()] {
             assert!(!terms.allows_early_withdrawal());
             assert!(!terms.claims_interest_on_withdrawal());
+        }
+    }
+
+    #[test]
+    fn only_fixed_jars_are_restaked_early_into_score_based() {
+        let all_terms = [
+            fixed_terms(),
+            flexible_terms(),
+            score_based_terms(),
+            tiered_score_based_terms(),
+        ];
+
+        for source in &all_terms {
+            for target in &all_terms {
+                let expected = matches!(source, Terms::Fixed(_)) && target.is_score_based();
+                assert_eq!(expected, source.allows_early_restake_into(target));
+            }
+        }
+    }
+
+    #[test]
+    fn restakable_balance_of_fixed_jar_into_score_based_includes_immature_deposits() {
+        let jar = jar(&[(0, 100), (MS_IN_YEAR, 200), (2 * MS_IN_YEAR, 300)]);
+
+        for target in [score_based_terms(), tiered_score_based_terms()] {
+            assert_eq!((600, 3), jar.get_restakable_balance(&fixed_terms(), &target));
         }
     }
 

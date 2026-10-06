@@ -9,6 +9,8 @@ pub trait TermsApi {
     fn allows_early_withdrawal(&self) -> bool;
     /// Whether withdrawal also claims the jar's accrued interest.
     fn claims_interest_on_withdrawal(&self) -> bool;
+    /// Whether immature deposits can be restaked into a product with `target` terms.
+    fn allows_early_restake_into(&self, target: &Terms) -> bool;
     fn is_liquid(&self, deposit: &Deposit) -> bool;
 }
 
@@ -19,6 +21,10 @@ impl TermsApi for Terms {
 
     fn claims_interest_on_withdrawal(&self) -> bool {
         matches!(self, Terms::Fixed(_))
+    }
+
+    fn allows_early_restake_into(&self, target: &Terms) -> bool {
+        matches!(self, Terms::Fixed(_)) && target.is_score_based()
     }
 
     fn is_liquid(&self, deposit: &Deposit) -> bool {

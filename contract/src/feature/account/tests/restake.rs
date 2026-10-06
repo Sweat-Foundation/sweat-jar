@@ -18,7 +18,8 @@ use crate::{
     feature::{
         account::model::test_utils::jar,
         product::model::test_utils::{
-            product, protected_product, tiered_score_based_product, ProductBuilder, ProtectedProduct,
+            product, product_7_days_20_cap_score_based, protected_product, tiered_score_based_product, ProductBuilder,
+            ProtectedProduct,
         },
     },
 };
@@ -103,7 +104,7 @@ fn restake_immature_fixed_jar(
         .with_products(&[product.clone()])
         .with_latest_account(&alice, &[(product.id.clone(), alice_jar)]);
 
-    // Early withdrawal of fixed jars must not make immature deposits restakable.
+    // Immature fixed deposits are restakable only into score-based products.
     context.set_block_timestamp_in_days(100);
 
     context.switch_account(&alice);
@@ -744,4 +745,78 @@ fn restake_into_tiered_score_based_product_sets_timezone(
         .restake(source_product.id.clone(), ticket, None, None);
 
     assert_eq!(timezone, context.contract().get_account(&alice).timezone);
+}
+
+#[rstest]
+fn restake_immature_fixed_jar_into_score_based_product(
+    admin: AccountId,
+    alice: AccountId,
+    #[from(product)] source_product: Product,
+    #[from(tiered_score_based_product)] target_product: Product,
+    #[values(1_000_000)] principal: TokenAmount,
+    #[from(jar)]
+    #[with(vec![(0, principal)])]
+    alice_jar: Jar,
+) {
+    let mut context = Context::new(admin)
+        .with_products(&[source_product.clone(), target_product.clone()])
+        .with_latest_account(&alice, &[(source_product.id.clone(), alice_jar)]);
+
+    let restake_time = 100 * MS_IN_DAY;
+    context.set_block_timestamp_in_ms(restake_time);
+
+    let interest = context.contract().get_total_interest(alice.clone()).amount.total.0;
+    assert_ne!(0, interest);
+
+    let ticket = DepositTicket {
+        product_id: target_product.id.clone(),
+        valid_until: (MS_IN_YEAR * 10).into(),
+        timezone: Some(Timezone::hour_shift(0)),
+    };
+
+    context.switch_account(&alice);
+    context
+        .contract()
+        .restake(source_product.id.clone(), ticket, None, None);
+
+    let contract = context.contract();
+    let account = contract.get_account(&alice);
+
+    let target_jar = account.get_jar(&target_product.id);
+    assert_eq!(principal, target_jar.total_principal());
+    assert_eq!(restake_time, target_jar.deposits.first().unwrap().created_at);
+
+    // Accrued interest stays claimable in the source jar.
+    let source_jar = account.get_jar(&source_product.id);
+    assert!(source_jar.deposits.is_empty());
+    assert_eq!(interest, source_jar.cache.unwrap().interest);
+    assert_eq!(interest, contract.get_total_interest(alice).amount.total.0);
+}
+
+#[rstest]
+#[should_panic(expected = "Nothing to restake")]
+fn restake_immature_score_based_jar_into_score_based_product(
+    admin: AccountId,
+    alice: AccountId,
+    #[from(product_7_days_20_cap_score_based)] source_product: Product,
+    #[from(tiered_score_based_product)] target_product: Product,
+    #[from(jar)]
+    #[with(vec![(0, 1_000_000)])]
+    alice_jar: Jar,
+) {
+    let mut context = Context::new(admin)
+        .with_products(&[source_product.clone(), target_product.clone()])
+        .with_latest_account(&alice, &[(source_product.id.clone(), alice_jar)]);
+    context.contract().get_account_mut(&alice).timezone = Timezone::hour_shift(0);
+
+    context.set_block_timestamp_in_days(3);
+
+    let ticket = DepositTicket {
+        product_id: target_product.id.clone(),
+        valid_until: (MS_IN_YEAR * 10).into(),
+        timezone: None,
+    };
+
+    context.switch_account(&alice);
+    context.contract().restake(source_product.id, ticket, None, None);
 }
