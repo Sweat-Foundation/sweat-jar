@@ -1,6 +1,6 @@
 [package]
 name = "sweat_jar"
-version = "4.4.0"
+version = "4.5.0"
 authors = ["Sweat Economy"]
 edition = "2021"
 repository = "https://github.com/sweatco/sweat-jar"
