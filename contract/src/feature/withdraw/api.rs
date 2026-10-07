@@ -16,9 +16,9 @@ use sweat_jar_model::{
 
 #[cfg(not(test))]
 use crate::common::assertions::assert_gas;
-use crate::common::env::env_ext;
 #[cfg(test)]
 use crate::common::env::test_env_ext;
+use crate::common::{assertions::assert_not_sunset, env::env_ext};
 
 #[cfg(not(test))]
 pub(crate) mod gas {
@@ -127,6 +127,7 @@ pub(super) trait WithdrawCallbacks {
 #[near]
 impl WithdrawApi for Contract {
     fn withdraw(&mut self, product_id: ProductId) -> PromiseOrValue<WithdrawView> {
+        assert_not_sunset();
         let account_id = env::predecessor_account_id();
 
         self.get_account_mut(&account_id).get_jar_mut(&product_id).try_lock();
@@ -139,6 +140,7 @@ impl WithdrawApi for Contract {
     }
 
     fn withdraw_all(&mut self, product_ids: Option<HashSet<ProductId>>) -> PromiseOrValue<BulkWithdrawView> {
+        assert_not_sunset();
         let account_id = env::predecessor_account_id();
 
         self.update_account_cache(&account_id, None);
