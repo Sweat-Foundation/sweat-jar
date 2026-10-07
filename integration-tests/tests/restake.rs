@@ -1,7 +1,4 @@
-use std::collections::HashSet;
-
 use anyhow::Result;
-use sweat_jar_model::{data::deposit::DepositTicket, TokenAmount};
 use tracing::info;
 
 mod common;
@@ -14,7 +11,9 @@ async fn restake() -> Result<()> {
     info!("restake test");
 
     let product = RegisterProductCommand::Locked10Minutes6Percents;
+    let target = RegisterProductCommand::Locked10Minutes20000ScoreCap;
     let context = prepare_contract([product]).await?;
+    let signer = jar::register_protected_product(&context.jar, &context.manager, target.get()).await?;
 
     let amount = 1_000_000;
     jar::create_jar(&context.jar, &context.ft, &context.alice, &product.id(), amount).await?;
@@ -25,19 +24,25 @@ async fn restake() -> Result<()> {
 
     let first_jar_timestamp = jars.0.get(&product.id()).unwrap().first().unwrap().0;
 
-    context.fast_forward_hours(1).await?;
-    let ticket = DepositTicket {
-        product_id: product.get().id,
-        valid_until: 0.into(),
-        timezone: None,
-    };
-    jar::restake(&context.jar, &context.alice, &product.get().id, ticket, None, None).await?;
+    // Not mature yet: restake into a score-based product takes immature deposits too.
+    context.fast_forward_minutes(1).await?;
+    let (ticket, signature) =
+        jar::signed_restake_ticket(&context.jar, &context.alice, &target.id(), &signer, amount, 1).await?;
+    jar::restake(
+        &context.jar,
+        &context.alice,
+        &product.id(),
+        ticket,
+        Some(signature),
+        None,
+    )
+    .await?;
 
     let jars = jar::get_jars_for_account(&context.jar, context.alice.id()).await?;
     assert_eq!(1, jars.get_total_deposits_number());
     assert_eq!(amount, jars.get_total_principal());
 
-    let second_jar_timestamp = jars.0.get(&product.id()).unwrap().first().unwrap().0;
+    let second_jar_timestamp = jars.0.get(&target.id()).unwrap().first().unwrap().0;
     assert!(second_jar_timestamp > first_jar_timestamp);
 
     jar::claim_total(&context.jar, &context.alice, None).await?;
@@ -59,49 +64,57 @@ async fn restake_all() -> Result<()> {
 
     let product_5_min = RegisterProductCommand::Locked5Minutes60000Percents;
     let product_10_min = RegisterProductCommand::Locked10Minutes60000Percents;
-
-    let mut product_5_min_total = 0;
-    let mut product_10_min_total = 0;
+    let target = RegisterProductCommand::Locked10Minutes20000ScoreCap;
 
     let context = prepare_contract([product_5_min, product_10_min]).await?;
+    let signer = jar::register_protected_product(&context.jar, &context.manager, target.get()).await?;
 
-    product_5_min_total += PRINCIPAL + 1;
-    let amount = jar::create_jar(&context.jar, &context.ft, &context.alice, &product_5_min.id(), PRINCIPAL + 1).await?;
+    let amount = jar::create_jar(
+        &context.jar,
+        &context.ft,
+        &context.alice,
+        &product_5_min.id(),
+        PRINCIPAL + 1,
+    )
+    .await?;
     assert_eq!(amount, PRINCIPAL + 1);
 
-    product_5_min_total += PRINCIPAL + 2;
-    jar::create_jar(&context.jar, &context.ft, &context.alice, &product_5_min.id(), PRINCIPAL + 2).await?;
+    jar::create_jar(
+        &context.jar,
+        &context.ft,
+        &context.alice,
+        &product_5_min.id(),
+        PRINCIPAL + 2,
+    )
+    .await?;
+    jar::create_jar(
+        &context.jar,
+        &context.ft,
+        &context.alice,
+        &product_10_min.id(),
+        PRINCIPAL + 3,
+    )
+    .await?;
 
-    product_10_min_total += PRINCIPAL + 3;
-    jar::create_jar(&context.jar, &context.ft, &context.alice, &product_10_min.id(), PRINCIPAL + 3).await?;
-
-    product_5_min_total += JARS_COUNT as u128 * PRINCIPAL;
     context
         .bulk_create_jars(&context.alice, &product_5_min.id(), PRINCIPAL, JARS_COUNT)
         .await?;
 
+    let total = 3 * PRINCIPAL + 6 + JARS_COUNT as u128 * PRINCIPAL;
+
+    // The 5-minute jars are mature, the 10-minute one is not: all of them are restaked.
     context.fast_forward_minutes(6).await?;
 
     jar::claim_total(&context.jar, &context.alice, None).await?;
 
-    let ticket = DepositTicket {
-        product_id: product_5_min.id(),
-        valid_until: 0.into(),
-        timezone: None,
-    };
-    jar::restake_all(&context.jar, &context.alice, ticket, None, None).await?;
+    // Three regular deposits so far, bulk-created jars don't bump the nonce.
+    let (ticket, signature) =
+        jar::signed_restake_ticket(&context.jar, &context.alice, &target.id(), &signer, total, 3).await?;
+    jar::restake_all(&context.jar, &context.alice, ticket, Some(signature), None).await?;
 
     let jars = jar::get_jars_for_account(&context.jar, context.alice.id()).await?;
-    let principals_set: HashSet<TokenAmount> = jars
-        .0
-        .values()
-        .flat_map(|deposits| deposits.iter().map(|(_, principal)| principal.0))
-        .collect();
-
-    assert_eq!(
-        HashSet::from_iter([product_5_min_total, product_10_min_total]),
-        principals_set
-    );
+    assert_eq!(1, jars.get_total_deposits_number());
+    assert_eq!(total, jars.get_total_principal_for_product(&target.id()));
 
     Ok(())
 }

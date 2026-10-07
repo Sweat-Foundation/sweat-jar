@@ -133,14 +133,13 @@ impl Contract {
         let request = self.prepare_request_safely(ticket, signature, builder);
         let event = Restake(request.account_id.clone(), RestakeData::from(&request));
 
+        self.get_account_mut(&request.account_id)
+            .try_set_timezone(ticket.timezone);
+
+        // Deposits leave the source jars, so pending score-based interest must be settled first.
+        self.settle_interest(&request.account_id);
         for (product_id, _) in &request.partitions {
             self.update_jar_cache(&request.account_id, product_id);
-        }
-
-        let product = self.get_product(&ticket.product_id);
-        if product.terms.is_score_based() {
-            self.get_account_mut(&request.account_id)
-                .try_set_timezone(ticket.timezone);
         }
 
         if request.withdrawal.is_none() {
@@ -166,6 +165,10 @@ impl Contract {
         let product_id = ticket.product_id.clone();
         let product = self.get_product(&product_id);
         product.assert_enabled();
+        require!(
+            product.terms.is_score_based(),
+            "Restake is only allowed into score-based products"
+        );
 
         let request = builder.build(self);
 
@@ -215,11 +218,11 @@ impl RequestBuilder for RestakeRequestBuilder {
         jar.assert_not_locked();
 
         let product = contract.get_product(&self.from);
-        let (mature_balance, partition_index) = jar.get_liquid_balance(&product.terms);
+        let (balance, partition_index) = jar.get_balance();
 
-        let deposit = DepositDto::new(self.ticket.product_id.clone(), mature_balance, self.target_amount);
+        let deposit = DepositDto::new(self.ticket.product_id.clone(), balance, self.target_amount);
 
-        let withdrawal_amount = mature_balance - deposit.amount;
+        let withdrawal_amount = balance - deposit.amount;
         // TODO: add test for 0 case and replace `gt` with `>`
         let withdrawal = if withdrawal_amount.gt(&0) {
             Some(WithdrawalDto {
@@ -248,7 +251,7 @@ struct RestakeAllRequestBuilder {
 impl RequestBuilder for RestakeAllRequestBuilder {
     fn build(&self, contract: &Contract) -> Request {
         let mut partition_indices: Vec<(ProductId, usize)> = vec![];
-        let mut total_mature_balance = 0;
+        let mut total_balance = 0;
         let mut total_fee = 0;
 
         for (product_id, jar) in &contract.get_account(&self.account_id).jars {
@@ -257,24 +260,24 @@ impl RequestBuilder for RestakeAllRequestBuilder {
             }
 
             let product = contract.get_product(product_id);
-            let (balance, partition_index) = jar.get_liquid_balance(&product.terms);
+            let (balance, partition_index) = jar.get_balance();
 
             // TODO: add test for 0 case and replace `gt` with `>`
             if balance.gt(&0) {
-                total_mature_balance += balance;
+                total_balance += balance;
                 total_fee += product.calculate_fee(balance);
                 partition_indices.push((product_id.clone(), partition_index));
             }
         }
 
-        let deposit = DepositDto::new(self.ticket.product_id.clone(), total_mature_balance, self.target_amount);
+        let deposit = DepositDto::new(self.ticket.product_id.clone(), total_balance, self.target_amount);
 
-        let withdrawal_amount = total_mature_balance - deposit.amount;
+        let withdrawal_amount = total_balance - deposit.amount;
         // TODO: add test for 0 case and replace `gt` with `>`
         let withdrawal = if withdrawal_amount.gt(&0) {
             Some(WithdrawalDto {
                 amount: withdrawal_amount,
-                fee: mul_div_ceil(total_fee, withdrawal_amount, total_mature_balance),
+                fee: mul_div_ceil(total_fee, withdrawal_amount, total_balance),
             })
         } else {
             None
@@ -309,9 +312,9 @@ impl From<&Request> for RestakeData {
 }
 
 impl DepositDto {
-    fn new(product_id: ProductId, mature_balance: TokenAmount, target_amount: Option<TokenAmount>) -> Self {
-        let target_amount = target_amount.unwrap_or(mature_balance);
-        require!(target_amount <= mature_balance, "Not enough funds to restake");
+    fn new(product_id: ProductId, balance: TokenAmount, target_amount: Option<TokenAmount>) -> Self {
+        let target_amount = target_amount.unwrap_or(balance);
+        require!(target_amount <= balance, "Not enough funds to restake");
 
         Self {
             product_id,
@@ -345,9 +348,9 @@ mod tests {
         // true result is bounded by total_fee. Regression test for PROD-3727 (L-2).
         let total_fee: u128 = 500_000 * 10u128.pow(21);
         let withdrawal_amount: u128 = 900_000 * 10u128.pow(21);
-        let total_mature_balance: u128 = 1_000_000 * 10u128.pow(21);
+        let total_balance: u128 = 1_000_000 * 10u128.pow(21);
 
-        let fee = mul_div_ceil(total_fee, withdrawal_amount, total_mature_balance);
+        let fee = mul_div_ceil(total_fee, withdrawal_amount, total_balance);
 
         assert!(fee > 0);
         assert!(fee <= total_fee);

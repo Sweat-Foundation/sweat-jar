@@ -18,13 +18,19 @@ use crate::{
     feature::{
         account::model::test_utils::jar,
         product::model::test_utils::{
-            product, protected_product, tiered_score_based_product, ProductBuilder, ProtectedProduct,
+            product, product_7_days_20_cap_score_based, protected_score_based_product, tiered_score_based_product,
+            ProductBuilder, ProtectedProduct,
         },
     },
 };
 
 #[rstest]
-fn restake_by_not_owner(admin: AccountId, bob: AccountId, product: Product, #[from(jar)] alice_jar: Jar) {
+fn restake_by_not_owner(
+    admin: AccountId,
+    bob: AccountId,
+    #[from(tiered_score_based_product)] product: Product,
+    #[from(jar)] alice_jar: Jar,
+) {
     let mut context = Context::new(admin)
         .with_products(&[product.clone()])
         .with_latest_account(&alice(), &[(product.id.clone(), alice_jar.clone())]);
@@ -35,7 +41,7 @@ fn restake_by_not_owner(admin: AccountId, bob: AccountId, product: Product, #[fr
         let ticket = DepositTicket {
             product_id: product.id.clone(),
             valid_until: valid_until.into(),
-            timezone: None,
+            timezone: Some(Timezone::hour_shift(0)),
         };
         context.contract().restake(product.id.clone(), ticket, None, None);
     });
@@ -45,7 +51,7 @@ fn restake_by_not_owner(admin: AccountId, bob: AccountId, product: Product, #[fr
         let ticket = DepositTicket {
             product_id: product.id.clone(),
             valid_until: valid_until.into(),
-            timezone: None,
+            timezone: Some(Timezone::hour_shift(0)),
         };
         context.contract().restake_all(ticket, None, None);
     });
@@ -56,7 +62,7 @@ fn restake_by_not_owner(admin: AccountId, bob: AccountId, product: Product, #[fr
         let ticket = DepositTicket {
             product_id: product.id.clone(),
             valid_until: valid_until.into(),
-            timezone: None,
+            timezone: Some(Timezone::hour_shift(0)),
         };
         context.contract().restake(product.id.clone(), ticket, None, None);
     });
@@ -66,32 +72,15 @@ fn restake_by_not_owner(admin: AccountId, bob: AccountId, product: Product, #[fr
         let ticket = DepositTicket {
             product_id: product.id.clone(),
             valid_until: valid_until.into(),
-            timezone: None,
+            timezone: Some(Timezone::hour_shift(0)),
         };
         context.contract().restake_all(ticket, None, None);
     });
 }
 
 #[rstest]
-#[should_panic(expected = "Nothing to restake")]
-fn restake_before_maturity(alice: AccountId, admin: AccountId, product: Product, #[from(jar)] alice_jar: Jar) {
-    let mut context = Context::new(admin)
-        .with_products(&[product.clone()])
-        .with_latest_account(&alice, &[(product.id.clone(), alice_jar.clone())]);
-
-    context.switch_account(&alice);
-    let valid_until = MS_IN_YEAR * 10;
-    let ticket = DepositTicket {
-        product_id: product.id.clone(),
-        valid_until: valid_until.into(),
-        timezone: None,
-    };
-    context.contract().restake(product.id, ticket, None, None);
-}
-
-#[rstest]
-#[should_panic(expected = "Nothing to restake")]
-fn restake_immature_fixed_jar(
+#[should_panic(expected = "Restake is only allowed into score-based products")]
+fn restake_into_fixed_product(
     alice: AccountId,
     admin: AccountId,
     product: Product,
@@ -103,14 +92,13 @@ fn restake_immature_fixed_jar(
         .with_products(&[product.clone()])
         .with_latest_account(&alice, &[(product.id.clone(), alice_jar)]);
 
-    // Early withdrawal of fixed jars must not make immature deposits restakable.
-    context.set_block_timestamp_in_days(100);
+    context.set_block_timestamp_in_ms(MS_IN_YEAR + MS_IN_DAY);
 
     context.switch_account(&alice);
     let ticket = DepositTicket {
         product_id: product.id.clone(),
         valid_until: (MS_IN_YEAR * 10).into(),
-        timezone: None,
+        timezone: Some(Timezone::hour_shift(0)),
     };
     context.contract().restake(product.id, ticket, None, None);
 }
@@ -134,14 +122,19 @@ fn restake_with_disabled_product(alice: AccountId, admin: AccountId, product: Pr
     let ticket = DepositTicket {
         product_id: product.id.clone(),
         valid_until: valid_until.into(),
-        timezone: None,
+        timezone: Some(Timezone::hour_shift(0)),
     };
     context.contract().restake(product.id, ticket, None, None);
 }
 
 #[rstest]
 #[should_panic(expected = "Nothing to restake")]
-fn restake_empty_jar(alice: AccountId, admin: AccountId, product: Product, #[from(jar)] alice_jar: Jar) {
+fn restake_empty_jar(
+    alice: AccountId,
+    admin: AccountId,
+    #[from(tiered_score_based_product)] product: Product,
+    #[from(jar)] alice_jar: Jar,
+) {
     let mut context = Context::new(admin.clone())
         .with_products(&[product.clone()])
         .with_latest_account(&alice, &[(product.id.clone(), alice_jar.clone())]);
@@ -153,7 +146,7 @@ fn restake_empty_jar(alice: AccountId, admin: AccountId, product: Product, #[fro
     let ticket = DepositTicket {
         product_id: product.id.clone(),
         valid_until: valid_until.into(),
-        timezone: None,
+        timezone: Some(Timezone::hour_shift(0)),
     };
     context.contract().restake(product.id, ticket, None, None);
 }
@@ -162,7 +155,7 @@ fn restake_empty_jar(alice: AccountId, admin: AccountId, product: Product, #[fro
 fn restake_after_maturity(
     alice: AccountId,
     admin: AccountId,
-    product: Product,
+    #[from(tiered_score_based_product)] product: Product,
     #[values(100, 100_000, 2_500_000)] principal: TokenAmount,
     #[from(jar)]
     #[with(vec![(0, principal)])]
@@ -180,7 +173,7 @@ fn restake_after_maturity(
     let ticket = DepositTicket {
         product_id: product.id.clone(),
         valid_until: valid_until.into(),
-        timezone: None,
+        timezone: Some(Timezone::hour_shift(0)),
     };
     context.contract().restake(product.id.clone(), ticket, None, None);
 
@@ -196,7 +189,7 @@ fn restake_after_maturity(
 fn restake_for_protected_product_success(
     alice: AccountId,
     admin: AccountId,
-    #[from(protected_product)] ProtectedProduct { product, signer }: ProtectedProduct,
+    #[from(protected_score_based_product)] ProtectedProduct { product, signer }: ProtectedProduct,
     #[values(100, 100_000, 2_500_000)] principal: TokenAmount,
     #[from(jar)]
     #[with(vec![(0, principal)])]
@@ -214,7 +207,7 @@ fn restake_for_protected_product_success(
     let ticket = DepositTicket {
         product_id: product.id.clone(),
         valid_until: valid_until.into(),
-        timezone: None,
+        timezone: Some(Timezone::hour_shift(0)),
     };
     let signature = signer.sign(
         DepositMessage::new(
@@ -245,7 +238,7 @@ fn restake_for_protected_product_success(
 fn sequential_restake_for_protected_product_success(
     alice: AccountId,
     admin: AccountId,
-    #[from(protected_product)] ProtectedProduct { product, signer }: ProtectedProduct,
+    #[from(protected_score_based_product)] ProtectedProduct { product, signer }: ProtectedProduct,
     #[values(100, 100_000, 2_500_000)] principal: TokenAmount,
     #[from(jar)]
     #[with(vec![(0, principal)])]
@@ -263,7 +256,7 @@ fn sequential_restake_for_protected_product_success(
     let ticket = DepositTicket {
         product_id: product.id.clone(),
         valid_until: valid_until.into(),
-        timezone: None,
+        timezone: Some(Timezone::hour_shift(0)),
     };
 
     let signature = signer.sign(
@@ -299,7 +292,7 @@ fn sequential_restake_for_protected_product_success(
     let ticket = DepositTicket {
         product_id: product.id.clone(),
         valid_until: valid_until.into(),
-        timezone: None,
+        timezone: Some(Timezone::hour_shift(0)),
     };
 
     let signature = signer.sign(
@@ -332,7 +325,7 @@ fn sequential_restake_for_protected_product_success(
 fn restake_for_protected_product_invalid_signature(
     alice: AccountId,
     admin: AccountId,
-    #[from(protected_product)] ProtectedProduct { product, signer }: ProtectedProduct,
+    #[from(protected_score_based_product)] ProtectedProduct { product, signer }: ProtectedProduct,
     #[values(100, 100_000, 2_500_000)] principal: TokenAmount,
     #[from(jar)]
     #[with(vec![(0, principal)])]
@@ -350,7 +343,7 @@ fn restake_for_protected_product_invalid_signature(
     let ticket = DepositTicket {
         product_id: product.id.clone(),
         valid_until: valid_until.into(),
-        timezone: None,
+        timezone: Some(Timezone::hour_shift(0)),
     };
 
     // invalid signature – wrong amount
@@ -376,7 +369,7 @@ fn restake_for_protected_product_invalid_signature(
 fn restake_with_deposit_signature(
     alice: AccountId,
     admin: AccountId,
-    #[from(protected_product)] ProtectedProduct { product, signer }: ProtectedProduct,
+    #[from(protected_score_based_product)] ProtectedProduct { product, signer }: ProtectedProduct,
     #[values(100, 100_000, 2_500_000)] principal: TokenAmount,
     #[from(jar)]
     #[with(vec![(0, principal)])]
@@ -394,7 +387,7 @@ fn restake_with_deposit_signature(
     let ticket = DepositTicket {
         product_id: product.id.clone(),
         valid_until: valid_until.into(),
-        timezone: None,
+        timezone: Some(Timezone::hour_shift(0)),
     };
 
     // invalid signature – wrong amount
@@ -420,13 +413,13 @@ fn restake_with_deposit_signature(
 fn restake_for_protected_product_repeated_nonce(
     alice: AccountId,
     admin: AccountId,
-    #[from(protected_product)]
+    #[from(protected_score_based_product)]
     #[with("product_1".to_string())]
     ProtectedProduct {
         product: product_1,
         signer: signer_1,
     }: ProtectedProduct,
-    #[from(protected_product)]
+    #[from(protected_score_based_product)]
     #[with("product_2".to_string())]
     ProtectedProduct {
         product: product_2,
@@ -455,7 +448,7 @@ fn restake_for_protected_product_repeated_nonce(
     let ticket = DepositTicket {
         product_id: product_1.id.clone(),
         valid_until: valid_until.into(),
-        timezone: None,
+        timezone: Some(Timezone::hour_shift(0)),
     };
 
     let signature = signer_1.sign(
@@ -494,44 +487,32 @@ fn restake_for_protected_product_repeated_nonce(
 
 #[rstest]
 #[should_panic(expected = "Not matching signature")]
-fn restake_for_protected_product_maturity_mistiming(
+fn restake_for_protected_product_requires_signature_for_full_balance(
     alice: AccountId,
     admin: AccountId,
-    #[from(protected_product)] ProtectedProduct { product, signer }: ProtectedProduct,
+    #[from(protected_score_based_product)] ProtectedProduct { product, signer }: ProtectedProduct,
     #[values(100, 100_000, 2_500_000)] principal_1: TokenAmount,
+    #[values(150_000, 7_000_000)] principal_2: TokenAmount,
     #[from(jar)]
-    #[with(vec![(0, principal_1)])]
-    alice_jar_1: Jar,
-    #[values(150_000, 7_000_000, 9_500_000)] _principal_2: TokenAmount,
-    #[from(jar)]
-    #[with(vec![(MS_IN_DAY * 2, _principal_2)])]
-    alice_jar_2: Jar,
+    #[with(vec![(0, principal_1), (MS_IN_DAY * 2, principal_2)])]
+    alice_jar: Jar,
 ) {
     let mut context = Context::new(admin.clone())
         .with_products(&[product.clone()])
-        .with_latest_account(
-            &alice,
-            &[
-                (product.id.clone(), alice_jar_1.clone()),
-                (product.id.clone(), alice_jar_2.clone()),
-            ],
-        );
+        .with_latest_account(&alice, &[(product.id.clone(), alice_jar)]);
 
-    // at this point the first deposit is mature
+    // Only the first deposit is mature, but restake takes both.
     let restake_time = MS_IN_YEAR + MS_IN_DAY;
     context.set_block_timestamp_in_ms(restake_time);
 
     context.switch_account(&alice);
-    // The actual restake call happens 2 days later (see below), so
-    // valid_until needs to cover that later timestamp too.
-    let valid_until = restake_time + 2 * MS_IN_DAY + MS_IN_DAY;
+    let valid_until = restake_time + MS_IN_DAY;
     let ticket = DepositTicket {
         product_id: product.id.clone(),
         valid_until: valid_until.into(),
-        timezone: None,
+        timezone: Some(Timezone::hour_shift(0)),
     };
 
-    // create signature for principal of first deposit only
     let signature = signer.sign(
         DepositMessage::new(
             Purpose::Restake,
@@ -545,13 +526,9 @@ fn restake_for_protected_product_maturity_mistiming(
         .as_str(),
     );
 
-    // at this point both deposits are mature
-    let restake_time = restake_time + 2 * MS_IN_DAY;
-    context.set_block_timestamp_in_ms(restake_time);
-
     context
         .contract()
-        .restake(product.id, ticket.clone(), Some(signature.into()), None);
+        .restake(product.id, ticket, Some(signature.into()), None);
 }
 
 #[rstest]
@@ -559,7 +536,7 @@ fn restake_for_protected_product_maturity_mistiming(
 fn deposit_with_outdated_nonce_after_restake(
     alice: AccountId,
     admin: AccountId,
-    #[from(protected_product)] ProtectedProduct { product, signer }: ProtectedProduct,
+    #[from(protected_score_based_product)] ProtectedProduct { product, signer }: ProtectedProduct,
     #[values(100_000)] principal: TokenAmount,
     #[from(jar)]
     #[with(vec![(0, principal)])]
@@ -578,7 +555,7 @@ fn deposit_with_outdated_nonce_after_restake(
     let ticket = DepositTicket {
         product_id: product.id.clone(),
         valid_until: valid_until.into(),
-        timezone: None,
+        timezone: Some(Timezone::hour_shift(0)),
     };
 
     // Create signature for restake
@@ -606,7 +583,7 @@ fn deposit_with_outdated_nonce_after_restake(
     let ticket = DepositTicket {
         product_id: product.id.clone(),
         valid_until: valid_until.into(),
-        timezone: None,
+        timezone: Some(Timezone::hour_shift(0)),
     };
     let signature = signer.sign(
         DepositMessage::new(
@@ -630,7 +607,7 @@ fn deposit_with_outdated_nonce_after_restake(
 fn restake_with_withdrawal(
     admin: AccountId,
     alice: AccountId,
-    #[from(product)] product: Product,
+    #[from(tiered_score_based_product)] product: Product,
     #[values(1_000_000)] principal: TokenAmount,
     #[from(jar)]
     #[with(vec![(0, principal)])]
@@ -651,7 +628,7 @@ fn restake_with_withdrawal(
     let ticket = DepositTicket {
         product_id: product.id.clone(),
         valid_until: valid_until.into(),
-        timezone: None,
+        timezone: Some(Timezone::hour_shift(0)),
     };
 
     let withdrawal_amount = 100;
@@ -679,7 +656,7 @@ fn restake_with_withdrawal(
 fn restake_exceeds_target_product_cap(
     admin: AccountId,
     alice: AccountId,
-    #[from(product)] product: Product,
+    #[from(tiered_score_based_product)] product: Product,
     #[values(1_000_000)] principal: TokenAmount,
     #[from(jar)]
     #[with(vec![(0, principal)])]
@@ -699,7 +676,7 @@ fn restake_exceeds_target_product_cap(
     let ticket = DepositTicket {
         product_id: target_product.id.clone(),
         valid_until: valid_until.into(),
-        timezone: None,
+        timezone: Some(Timezone::hour_shift(0)),
     };
 
     context.switch_account(&alice);
@@ -744,4 +721,85 @@ fn restake_into_tiered_score_based_product_sets_timezone(
         .restake(source_product.id.clone(), ticket, None, None);
 
     assert_eq!(timezone, context.contract().get_account(&alice).timezone);
+}
+
+#[rstest]
+fn restake_immature_fixed_jar_into_score_based_product(
+    admin: AccountId,
+    alice: AccountId,
+    #[from(product)] source_product: Product,
+    #[from(tiered_score_based_product)] target_product: Product,
+    #[values(1_000_000)] principal: TokenAmount,
+    #[from(jar)]
+    #[with(vec![(0, principal)])]
+    alice_jar: Jar,
+) {
+    let mut context = Context::new(admin)
+        .with_products(&[source_product.clone(), target_product.clone()])
+        .with_latest_account(&alice, &[(source_product.id.clone(), alice_jar)]);
+
+    let restake_time = 100 * MS_IN_DAY;
+    context.set_block_timestamp_in_ms(restake_time);
+
+    let interest = context.contract().get_total_interest(alice.clone()).amount.total.0;
+    assert_ne!(0, interest);
+
+    let ticket = DepositTicket {
+        product_id: target_product.id.clone(),
+        valid_until: (MS_IN_YEAR * 10).into(),
+        timezone: Some(Timezone::hour_shift(0)),
+    };
+
+    context.switch_account(&alice);
+    context
+        .contract()
+        .restake(source_product.id.clone(), ticket, None, None);
+
+    let contract = context.contract();
+    let account = contract.get_account(&alice);
+
+    let target_jar = account.get_jar(&target_product.id);
+    assert_eq!(principal, target_jar.total_principal());
+    assert_eq!(restake_time, target_jar.deposits.first().unwrap().created_at);
+
+    // Accrued interest stays claimable in the source jar.
+    let source_jar = account.get_jar(&source_product.id);
+    assert!(source_jar.deposits.is_empty());
+    assert_eq!(interest, source_jar.cache.unwrap().interest);
+    assert_eq!(interest, contract.get_total_interest(alice).amount.total.0);
+}
+
+#[rstest]
+fn restake_immature_score_based_jar_into_score_based_product(
+    admin: AccountId,
+    alice: AccountId,
+    #[from(product_7_days_20_cap_score_based)] source_product: Product,
+    #[from(tiered_score_based_product)] target_product: Product,
+    #[values(1_000_000)] principal: TokenAmount,
+    #[from(jar)]
+    #[with(vec![(0, principal)])]
+    alice_jar: Jar,
+) {
+    let mut context = Context::new(admin)
+        .with_products(&[source_product.clone(), target_product.clone()])
+        .with_latest_account(&alice, &[(source_product.id.clone(), alice_jar)]);
+    context.contract().get_account_mut(&alice).timezone = Timezone::hour_shift(0);
+
+    context.set_block_timestamp_in_days(3);
+
+    let ticket = DepositTicket {
+        product_id: target_product.id.clone(),
+        valid_until: (MS_IN_YEAR * 10).into(),
+        timezone: Some(Timezone::hour_shift(0)),
+    };
+
+    context.switch_account(&alice);
+    context
+        .contract()
+        .restake(source_product.id.clone(), ticket, None, None);
+
+    let contract = context.contract();
+    let account = contract.get_account(&alice);
+    assert!(account.get_jar(&source_product.id).deposits.is_empty());
+    assert_eq!(principal, account.get_jar(&target_product.id).total_principal());
 }

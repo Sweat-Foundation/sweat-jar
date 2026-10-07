@@ -336,6 +336,23 @@ pub mod test_utils {
     }
 
     #[fixture]
+    pub fn protected_score_based_product(
+        #[default(DEFAULT_PRODUCT_NAME.to_string())] id: ProductId,
+        product: Product,
+        message_signer: MessageSigner,
+    ) -> ProtectedProduct {
+        let ProtectedProduct { product, signer } = protected_product(id, product, message_signer);
+
+        ProtectedProduct {
+            product: product.with_terms(Terms::ScoreBased(ScoreBasedProductTerms {
+                lockup_term: MS_IN_YEAR.into(),
+                score_cap: 20_000,
+            })),
+            signer,
+        }
+    }
+
+    #[fixture]
     pub fn terms(#[from(downgradable_apy)] apy: Apy) -> Terms {
         Terms::Fixed(FixedProductTerms {
             lockup_term: MS_IN_YEAR.into(),

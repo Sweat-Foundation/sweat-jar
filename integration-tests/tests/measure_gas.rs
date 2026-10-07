@@ -10,7 +10,6 @@
 
 use anyhow::Result;
 use near_workspaces::types::Gas;
-use sweat_jar_model::data::deposit::DepositTicket;
 
 mod common;
 use common::{jar, prepare::prepare_contract, product::RegisterProductCommand};
@@ -120,37 +119,35 @@ async fn measure_bulk_withdraw_gas() -> Result<()> {
     Ok(())
 }
 
-const RESTAKE_REMAINDER_PRINCIPALS: [u128; 3] = [100_000, 300_000, 500_000];
+const RESTAKE_REMAINDER_PRINCIPALS: [u128; 3] = [200_000, 600_000, 1_000_000];
 
 /// Measures `restake`'s gas cost when a non-zero withdrawal remainder is
 /// produced (dominated by the `after_transfer_remainder` callback), across a
-/// range of principals. Restaking less than the full mature balance of a
-/// liquid (early-withdrawal-allowed) jar always produces a remainder.
+/// range of principals. Restaking less than the full balance always produces
+/// a remainder.
 #[tokio::test]
 #[ignore = "run explicitly via `make measure-gas`"]
 async fn measure_after_restake_remainder_gas() -> Result<()> {
     let source = RegisterProductCommand::Flexible6Months6Percents;
-    let target = RegisterProductCommand::Locked10Minutes6Percents;
+    let target = RegisterProductCommand::Locked10Minutes20000ScoreCap;
     let source_id = source.id();
     let target_id = target.id();
     let mut samples = Vec::new();
 
     for &principal in &RESTAKE_REMAINDER_PRINCIPALS {
-        let context = prepare_contract([source, target]).await?;
+        let context = prepare_contract([source]).await?;
+        let signer = jar::register_protected_product(&context.jar, &context.manager, target.get()).await?;
 
         jar::create_jar(&context.jar, &context.ft, &context.alice, &source_id, principal).await?;
 
-        let ticket = DepositTicket {
-            product_id: target_id.clone(),
-            valid_until: 0.into(),
-            timezone: None,
-        };
+        let (ticket, signature) =
+            jar::signed_restake_ticket(&context.jar, &context.alice, &target_id, &signer, principal / 2, 1).await?;
         let outcome = jar::restake_raw(
             &context.jar,
             &context.alice,
             &source_id,
             ticket,
-            None,
+            Some(signature),
             Some((principal / 2).into()),
         )
         .await?;

@@ -130,6 +130,7 @@ impl WithdrawApi for Contract {
         let account_id = env::predecessor_account_id();
 
         self.get_account_mut(&account_id).get_jar_mut(&product_id).try_lock();
+        self.settle_interest(&account_id);
         self.update_jar_cache(&account_id, &product_id);
 
         let request = self.prepare_withdrawal(&account_id, &product_id, env::block_timestamp_ms());
@@ -189,7 +190,7 @@ impl Contract {
         let account = self.get_account(account_id);
         let jar = account.get_jar(product_id);
 
-        let (amount, partition_index) = jar.get_withdrawable_balance(&product.terms);
+        let (amount, partition_index) = jar.get_balance();
         let fee = product.calculate_fee(amount);
 
         let mut request = WithdrawalRequest {

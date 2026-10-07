@@ -1,9 +1,13 @@
 use anyhow::Result;
-use sweat_jar_model::data::{claim::ClaimedAmountView, deposit::DepositTicket};
+use sweat_jar_model::data::claim::ClaimedAmountView;
 use tracing::info;
 
 mod common;
-use common::{jar, prepare::prepare_contract, product::RegisterProductCommand::Locked5Minutes60000Percents};
+use common::{
+    jar,
+    prepare::prepare_contract,
+    product::RegisterProductCommand::{Locked10Minutes20000ScoreCap, Locked5Minutes60000Percents},
+};
 
 #[tokio::test]
 #[tracing::instrument]
@@ -69,6 +73,8 @@ async fn restake_many_jars() -> Result<()> {
     info!("restake many jars test");
 
     let context = prepare_contract([Locked5Minutes60000Percents]).await?;
+    let signer =
+        jar::register_protected_product(&context.jar, &context.manager, Locked10Minutes20000ScoreCap.get()).await?;
     common::ft::tge_mint(&context.ft, context.jar.id(), 100_000_000 * 10u128.pow(18)).await?;
 
     let product_id = Locked5Minutes60000Percents.id();
@@ -94,16 +100,26 @@ async fn restake_many_jars() -> Result<()> {
     };
     assert_eq!(1, claimed.detailed.len());
 
-    let ticket = DepositTicket {
-        product_id: product_id.clone(),
-        valid_until: 0.into(),
-        timezone: None,
-    };
-    jar::restake_all(&context.jar, &context.alice, ticket, None, None).await?;
+    let (ticket, signature) = jar::signed_restake_ticket(
+        &context.jar,
+        &context.alice,
+        &Locked10Minutes20000ScoreCap.id(),
+        &signer,
+        DEPOSIT_PRINCIPAL * DEPOSITS_COUNT as u128,
+        0,
+    )
+    .await?;
+    jar::restake_all(&context.jar, &context.alice, ticket, Some(signature), None).await?;
 
     let restaked_jars = jar::get_jars_for_account(&context.jar, context.alice.id()).await?;
     assert_eq!(1, restaked_jars.get_total_deposits_number());
-    let restake_date = restaked_jars.0.get(&product_id).unwrap().first().unwrap().0;
+    let restake_date = restaked_jars
+        .0
+        .get(&Locked10Minutes20000ScoreCap.id())
+        .unwrap()
+        .first()
+        .unwrap()
+        .0;
 
     assert!(original_date_latest < restake_date.0);
 
