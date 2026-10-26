@@ -3,6 +3,7 @@ use std::cmp;
 use sweat_jar_primitives::UDecimal;
 
 use crate::{
+    cap_at_sunset,
     data::{
         account::{common::FeaturesAccess, features::Feature, Account},
         jar::{Deposit, Jar},
@@ -10,12 +11,12 @@ use crate::{
             FixedProductTerms, FlexibleProductTerms, ScoreBasedProductTerms, Terms, TieredScoreBasedProductTerms,
         },
     },
-    start_of_the_day, Duration, Timestamp, ToAPY, TokenAmount, MS_IN_YEAR, SUNSET_AT, UTC,
+    start_of_the_day, Duration, Timestamp, ToAPY, TokenAmount, MS_IN_YEAR, UTC,
 };
 
 pub trait InterestCalculator {
     fn get_interest(&self, account: &Account, jar: &Jar, now: Timestamp) -> (TokenAmount, u64) {
-        let now = now.min(SUNSET_AT);
+        let now = cap_at_sunset(now);
         let since_date = jar.cache.map(|cache| cache.updated_at);
         let apy = self.get_apy(account);
         let cached_interest = jar.cache.map_or(0, |cache| cache.interest);

@@ -73,6 +73,22 @@ pub async fn get_fee_amount(jar: &Contract) -> Result<U128> {
     Ok(value.as_str().unwrap().parse()?)
 }
 
+pub async fn get_sunset_at(jar: &Contract) -> Result<Option<u64>> {
+    let value: Option<Value> = jar.view("get_sunset_at").await?.json()?;
+    Ok(value.map(|value| value.as_str().unwrap().parse()).transpose()?)
+}
+
+pub async fn set_sunset_at(jar: &Contract, caller: &Account, sunset_at: Option<u64>) -> Result<()> {
+    caller
+        .call(jar.id(), "set_sunset_at")
+        .args_json(json!({ "sunset_at": sunset_at.map(|value| value.to_string()) }))
+        .max_gas()
+        .transact()
+        .await?
+        .into_result()?;
+    Ok(())
+}
+
 pub async fn get_score(jar: &Contract, account_id: &AccountId) -> Result<Option<U128>> {
     let value: Option<Value> = jar
         .view("get_score")

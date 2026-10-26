@@ -11,7 +11,7 @@ use sweat_jar_model::{
         product::{Apy, Cap, FixedProductTerms, Product, ProductId, Terms},
         withdraw::BulkWithdrawView,
     },
-    Timezone, TokenAmount, MS_IN_DAY, SUNSET_AT,
+    Timezone, TokenAmount, MS_IN_DAY,
 };
 use sweat_jar_primitives::UDecimal;
 
@@ -19,7 +19,7 @@ use crate::{
     common::{
         env::test_env_ext,
         event::EventKind,
-        testing::{accounts::*, expect_panic, Context, TokenUtils, UnwrapPromise},
+        testing::{accounts::*, expect_panic, Context, TokenUtils, UnwrapPromise, SUNSET_AT},
     },
     feature::{
         account::model::test_utils::jar,
@@ -967,6 +967,7 @@ fn withdraw_callback_completes_after_sunset(
     #[with(vec![(0, 1_000_000)])] mut jar: Jar,
 ) {
     let mut context = Context::new(admin)
+        .with_sunset(SUNSET_AT)
         .with_products(&[product.clone()])
         .with_latest_account(&alice, &[(product.id.clone(), jar.lock().clone())]);
 

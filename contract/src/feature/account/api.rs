@@ -16,8 +16,8 @@ use sweat_jar_model::{
         score::Score,
     },
     interest::{get_interest, InterestCalculator},
-    ms_in_day, start_of_the_day, DailyScore, DailyScoreView, DaysOffset, ScoreIncrementProcessor, TimeHelper,
-    Timestamp, Timezone, TokenAmount, SUNSET_AT, UTC,
+    ms_in_day, start_of_the_day, sunset_at, DailyScore, DailyScoreView, DaysOffset, ScoreIncrementProcessor,
+    TimeHelper, Timestamp, Timezone, TokenAmount, UTC,
 };
 
 use crate::{
@@ -276,7 +276,7 @@ impl Contract {
                 let include_booster = matches!(product.terms, Terms::TieredScoreBased(_));
 
                 let apy = score.to_capped_apy(get_score_cap(account, product), include_booster);
-                let day_end = (day_start + ms_in_day()).min(adjust_relative(SUNSET_AT));
+                let day_end = (day_start + ms_in_day()).min(sunset_at().map_or(u64::MAX, adjust_relative));
 
                 let increment: (TokenAmount, u64) = jar
                     .deposits
