@@ -2,7 +2,7 @@
   "schema_version": "0.4.0",
   "metadata": {
     "name": "sweat_jar",
-    "version": "4.5.0",
+    "version": "4.6.0",
     "authors": [
       "Sweat Economy"
     ],
@@ -10,7 +10,7 @@
       "compiler": "rustc 1.93.1",
       "builder": "cargo-near cargo-near-build 0.11.3"
     },
-    "wasm_hash": "Hkfj3GiFYUCL77cn6s3tYoQm1fgq4z8TwD2tBuLEXQhe"
+    "wasm_hash": "BVMNkf7eRjuWHNjUjqheQG5E5Bc6AYEuGfiHDDHMCAt8"
   },
   "body": {
     "functions": [
@@ -1005,6 +1005,19 @@
         }
       },
       {
+        "name": "get_sunset_at",
+        "kind": "view",
+        "result": {
+          "serialization_type": "json",
+          "type_schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      {
         "name": "get_timezone",
         "kind": "view",
         "params": {
@@ -1392,6 +1405,24 @@
               "name": "public_key",
               "type_schema": {
                 "$ref": "#/definitions/Base64VecU8"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "name": "set_sunset_at",
+        "kind": "call",
+        "params": {
+          "serialization_type": "json",
+          "args": [
+            {
+              "name": "sunset_at",
+              "type_schema": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             }
           ]
@@ -2676,6 +2707,27 @@
                   "type": "string",
                   "enum": [
                     "apply_booster"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "data",
+                "event"
+              ],
+              "properties": {
+                "data": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "event": {
+                  "type": "string",
+                  "enum": [
+                    "set_sunset"
                   ]
                 }
               }
