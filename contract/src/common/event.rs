@@ -1,5 +1,5 @@
 use near_sdk::{
-    json_types::{Base64VecU8, U128},
+    json_types::{Base64VecU8, U128, U64},
     log, near, serde_json, AccountId,
 };
 use sweat_jar_model::{
@@ -37,6 +37,7 @@ pub enum EventKind {
     SetFeatureEnabled(AccountId, Feature, bool),
     BatchSetFeatureEnabled(Vec<AccountId>, Feature, bool),
     ApplyBooster(ApplyBoosterData),
+    SetSunset(Option<U64>),
 }
 
 #[derive(Debug)]

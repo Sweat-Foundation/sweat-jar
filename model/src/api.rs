@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use near_sdk::{
-    json_types::{Base64VecU8, I64, U128},
+    json_types::{Base64VecU8, I64, U128, U64},
     AccountId,
 };
 
@@ -148,6 +148,16 @@ pub trait RestakeApi {
         signature: Option<Base64VecU8>,
         amount: Option<U128>,
     ) -> ::near_sdk::PromiseOrValue<()>;
+}
+
+pub trait SunsetApi {
+    /// Returns the moment from which interest stops accruing and user operations are rejected,
+    /// or `None` if jars never close.
+    fn get_sunset_at(&self) -> Option<U64>;
+
+    /// Sets the sunset moment, or removes it with `None`. A new moment must be in the future.
+    /// Only accounts with the `UpgradeManager` role can call it.
+    fn set_sunset_at(&mut self, sunset_at: Option<U64>);
 }
 
 pub trait FeeApi {

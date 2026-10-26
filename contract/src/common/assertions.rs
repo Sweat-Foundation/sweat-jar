@@ -1,7 +1,7 @@
 use std::fmt::Display;
 
 use near_sdk::{env, require, AccountId};
-use sweat_jar_model::SUNSET_AT;
+use sweat_jar_model::is_sunset;
 
 use crate::Contract;
 
@@ -29,7 +29,7 @@ impl Contract {
 }
 
 pub(crate) fn assert_not_sunset() {
-    require!(env::block_timestamp_ms() < SUNSET_AT, "Jars are closed");
+    require!(!is_sunset(env::block_timestamp_ms()), "Jars are closed");
 }
 
 pub(crate) fn assert_gas<Message: Display>(gas_needed: u64, error: impl FnOnce() -> Message) {

@@ -18,7 +18,7 @@ use sweat_jar_model::{
         jar::Jar,
         product::{Product, ProductId},
     },
-    TokenAmount, MS_IN_DAY, MS_IN_HOUR, MS_IN_MINUTE,
+    Timestamp, TokenAmount, MS_IN_DAY, MS_IN_HOUR, MS_IN_MINUTE,
 };
 
 use super::{env::test_env_ext, event::EventKind};
@@ -59,6 +59,9 @@ pub(crate) struct Context {
     builder: VMContextBuilder,
 }
 
+/// 2026-12-30 14:00 UTC. Reference sunset for tests that enable one.
+pub(crate) const SUNSET_AT: Timestamp = 1_798_639_200_000;
+
 impl Context {
     pub(crate) fn new(operator: AccountId) -> Self {
         // `testing_env!` carries storage across invocations in a thread, so a
@@ -67,6 +70,7 @@ impl Context {
         near_sdk::mock::with_mocked_blockchain(|blockchain| {
             blockchain.take_storage();
         });
+        sweat_jar_model::reset_sunset_cache();
 
         let owner: AccountId = "owner".to_string().try_into().unwrap();
         let fee_account_id: AccountId = "fee".to_string().try_into().unwrap();
@@ -102,6 +106,12 @@ impl Context {
 
     pub(crate) fn contract(&self) -> MutexGuard<Contract> {
         self.contract.try_lock().expect("Contract is already locked")
+    }
+
+    pub(crate) fn with_sunset(self, sunset_at: Timestamp) -> Self {
+        sweat_jar_model::set_sunset_at(Some(sunset_at));
+
+        self
     }
 
     pub(crate) fn with_products(self, products: &[Product]) -> Self {

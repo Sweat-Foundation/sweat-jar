@@ -147,6 +147,42 @@ async fn unlock_jars_for_account_by_non_maintainer_panics() -> anyhow::Result<()
     Ok(())
 }
 
+// --- set_sunset_at (UpgradeManager) ---
+
+#[tokio::test]
+#[tracing::instrument]
+async fn set_sunset_at_by_upgrade_manager_succeeds() -> anyhow::Result<()> {
+    common::prepare::init_tracing();
+    let context = prepare_contract([]).await?;
+
+    jar::set_sunset_at(&context.jar, &context.manager, Some(u64::MAX)).await?;
+    assert_eq!(Some(u64::MAX), jar::get_sunset_at(&context.jar).await?);
+
+    jar::set_sunset_at(&context.jar, &context.manager, None).await?;
+    assert_eq!(None, jar::get_sunset_at(&context.jar).await?);
+
+    Ok(())
+}
+
+#[tokio::test]
+#[tracing::instrument]
+async fn set_sunset_at_by_non_upgrade_manager_panics() -> anyhow::Result<()> {
+    common::prepare::init_tracing();
+    let context = prepare_contract([]).await?;
+    let result = context
+        .alice
+        .call(context.jar.id(), "set_sunset_at")
+        .args_json(json!({ "sunset_at": u64::MAX.to_string() }))
+        .max_gas()
+        .transact()
+        .await?;
+
+    assert!(result.into_result().has_panic(&insufficient_permissions("set_sunset_at")));
+    assert_eq!(None, jar::get_sunset_at(&context.jar).await?);
+
+    Ok(())
+}
+
 // --- set_feature_enabled (Oracle) ---
 
 #[tokio::test]

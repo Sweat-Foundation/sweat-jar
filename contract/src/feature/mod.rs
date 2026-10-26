@@ -8,4 +8,5 @@ pub mod ft_receiver;
 pub mod penalty;
 pub mod product;
 pub mod restake;
+pub mod sunset;
 pub mod withdraw;
